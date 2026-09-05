@@ -1,5 +1,4 @@
 #include "PeerManager.h"
-
 #include <iostream>
 
 PeerManager::PeerManager(asio::io_context* io, uint8_t peer_id, int port)
