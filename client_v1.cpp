@@ -255,7 +255,7 @@ private:
 
 		switch (msg.type) {
 		case MessageType::Handshake:
-			handleHandshake(static_cast<uint8_t>(msg.body[1]));
+			handleHandshake(static_cast<uint8_t>(msg.body[0]));
 			break;
 		case MessageType::Chat:
 			read_queue.push_back(msg);
@@ -269,11 +269,10 @@ private:
 
 		auto self = shared_from_this();
 
-		std::vector<char> data = write_queue.front();
 
 		asio::async_write(
 			socket,
-			asio::buffer(data),
+			asio::buffer(write_queue.front()),
 			[self](const asio::error_code ec, std::size_t bytes) {
 				if (ec) {
 					return;
@@ -328,7 +327,7 @@ public:
 		: acceptor(
 			*io,
 			asio::ip::tcp::endpoint(
-				asio::ip::tcp::v4(),
+				asio::ip::make_address("127.0.0.1"),
 				port
 			)
 		),
@@ -345,9 +344,13 @@ public:
 			std::cout << "session already exists" << std::endl;
 			//delete the session
 		}
-		
+		std::cout << "succecsfully identified " << id << std::endl;
 		active_sessions[id] = session;
 	
+	}
+
+	void publicConnect() {
+		connect("127.0.0.1", 8080);
 	}
 
 private:
@@ -358,6 +361,7 @@ private:
 			{
 				if (!ec)
 				{
+					std::cout << "succesfully accepted" << std::endl;
 					auto session = std::make_shared<Session>(
 						std::move(socket),
 						peer_id,
@@ -413,10 +417,15 @@ int main() {
 
 	asio::io_context io;
 
-	uint8_t peer_id;
-	std::cin >> peer_id;
-	
-	PeerManager peer_manager(&io, peer_id);
+	int peer_id_in, port;
+	std::cin >> peer_id_in >> port;
+	uint8_t peer_id = static_cast<uint8_t>(peer_id_in);
+
+	PeerManager peer_manager(&io, peer_id,port);
+
+	if (peer_id == 1) {
+		peer_manager.publicConnect();
+	}
 	io.run();
 
 }
