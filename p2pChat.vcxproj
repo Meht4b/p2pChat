@@ -19,7 +19,18 @@
     </ProjectConfiguration>
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="client_v1.cpp" />
+    <ClCompile Include="ConsoleInterface.cpp" />
+    <ClCompile Include="main.cpp" />
+    <ClCompile Include="Message.cpp" />
+    <ClCompile Include="PeerManager.cpp" />
+    <ClCompile Include="Session.cpp" />
+    <ClCompile Include="SessionCallbackHandler.h" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="ConsoleInterface.h" />
+    <ClInclude Include="Message.h" />
+    <ClInclude Include="PeerManager.h" />
+    <ClInclude Include="Session.h" />
   </ItemGroup>
   <PropertyGroup Label="Globals">
     <VCProjectVersion>17.0</VCProjectVersion>

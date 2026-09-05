@@ -1,1 +1,6 @@
-C:\Users\mehth\source\repos\p2pChat\p2pChat\client_v1.cpp;C:\Users\mehth\source\repos\p2pChat\p2pChat\x64\Debug\client_v1.obj
+C:\Users\mehth\source\repos\p2pChat\p2pChat\ConsoleInterface.cpp;C:\Users\mehth\source\repos\p2pChat\p2pChat\x64\Debug\ConsoleInterface.obj
+C:\Users\mehth\source\repos\p2pChat\p2pChat\main.cpp;C:\Users\mehth\source\repos\p2pChat\p2pChat\x64\Debug\main.obj
+C:\Users\mehth\source\repos\p2pChat\p2pChat\Message.cpp;C:\Users\mehth\source\repos\p2pChat\p2pChat\x64\Debug\Message.obj
+C:\Users\mehth\source\repos\p2pChat\p2pChat\PeerManager.cpp;C:\Users\mehth\source\repos\p2pChat\p2pChat\x64\Debug\PeerManager.obj
+C:\Users\mehth\source\repos\p2pChat\p2pChat\Session.cpp;C:\Users\mehth\source\repos\p2pChat\p2pChat\x64\Debug\Session.obj
+C:\Users\mehth\source\repos\p2pChat\p2pChat\SessionCallbackHandler.h;C:\Users\mehth\source\repos\p2pChat\p2pChat\x64\Debug\SessionCallbackHandler.h.obj
