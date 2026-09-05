@@ -1,0 +1,22 @@
+{
+    "version": 1,
+    "revision": 0,
+    "rules": [
+        {
+            "primary-output": "x64\\Debug\\SessionCallbackHandler.obj",
+            "outputs": [
+                "x64\\Debug\\SessionCallbackHandler.h_22FBC4961E54FE91.ifc.dt.module.json",
+                "x64\\Debug\\SessionCallbackHandler.h_22FBC4961E54FE91.ifc.dt.d.json",
+                "x64\\Debug\\SessionCallbackHandler.h.ifc"
+            ],
+            "provides": [
+                {
+                    "logical-name": "C:\\Users\\mehth\\source\\repos\\p2pChat\\p2pChat\\SessionCallbackHandler.h",
+                    "source-path": "c:\\users\\mehth\\source\\repos\\p2pchat\\p2pchat\\sessioncallbackhandler.h",
+                    "lookup-method": "absolute"
+                }
+            ],
+            "requires": []
+        }
+    ]
+}
