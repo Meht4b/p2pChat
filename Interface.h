@@ -4,22 +4,24 @@
 #include <string>
 #include <asio.hpp>
 #include <thread>
-#include "PeerManager.h"
-#include "ConsoleInterface.h"
+#include <cstdint>
 
 class PeerManager;
+class ConsoleInterface;
 
 class Interface
 {
 private:
     asio::io_context io_context;
     std::unique_ptr<PeerManager> peer_manager;
-    ConsoleInterface* console_interface;
+    ConsoleInterface* console_interface = nullptr;
     std::thread network_thread;
 
 public:
     Interface();
     ~Interface();
+
+    void shutdown() noexcept;
 
     void setConsole(ConsoleInterface* console_interface);
     void start(int port, uint8_t user);

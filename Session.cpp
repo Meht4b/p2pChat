@@ -1,242 +1,169 @@
 #include "Session.h"
 
 #include <cstring>
-#include <iostream>
+#include <exception>
 #include <stdexcept>
+#include <utility>
 #include "Interface.h"
 
-Session::Session(asio::ip::tcp::socket socket, uint8_t local_id, SessionCallbackHandler* session_callback, ConnectionDirection direction,Interface& interface ) :
-		socket(std::move(socket)),
-		local_id(local_id),
-		session_callback(session_callback),
-		direction(direction),
-		interface(interface)
-		
+Session::Session(asio::ip::tcp::socket socket, uint8_t local_id,
+    SessionCallbackHandler* callback, ConnectionDirection direction, Interface& interface)
+    : socket(std::move(socket)), local_id(local_id), remote_id(0),
+      session_callback(callback), direction(direction), interface(interface)
 {
-
+    if (!session_callback)
+        throw std::invalid_argument("Session requires a callback handler");
 }
 
-void Session::start() {
-	readLength();
-}
-
-void Session::initiateHandshake() {
-		
-	std::vector<char> body(1);
-	body[0	] = static_cast<char>(local_id);
-
-	Message handshake_msg = {
-		MessageType::Handshake,
-		body
-	};
-
-	queueMessage(handshake_msg);
-	
-}
-
-//reads the length of the incoming message and then calls the readBody function
-void Session::readLength() {
-	
-	std::shared_ptr<Session> self = shared_from_this();
-	
-	//reads exactly the size of length header
-	asio::async_read(
-		socket,
-		asio::buffer(message_length),
-		[self](const asio::error_code ec, std::size_t bytes) {
-			if (ec) {
-				self->handleDisconnect();
-				//close the connection
-				return;
-			}
-
-			self->readBody();
-		}
-	);
-
-	}
-
-//reads the body and then creates an async loop by calling readLength function again also calls the processMessage function
-void Session::readBody() {
-	
-	auto self = shared_from_this();
-
-
-	//convert from big endian
-	uint32_t length =
-	  (static_cast<unsigned char>(message_length[0]) << 24)
-	| (static_cast<unsigned char>(message_length[1]) << 16)
-	| (static_cast<unsigned char>(message_length[2]) << 8)
-	|  static_cast<unsigned char>(message_length[3]);
-
-
-	if (length < 1) {
-		interface.printLineError("Invalid message length");
-		return;
-	}
-
-	if (length > MAX_MESSAGE_SIZE){
-		interface.printLineError("Invalid message length");
-		return;
-	}
-
-	message_body.resize(length);
-
-	asio::async_read(
-		socket,
-		asio::buffer(message_body),
-		[self,length](asio::error_code ec, std::size_t bytes) {
-
-			if (ec) {
-				self->handleDisconnect();
-				return;
-			}
-
-			Message msg;
-			msg.type = static_cast<MessageType>(static_cast<uint8_t>(self->message_body[0]));
-
-			msg.body.resize(length - 1);
-			memcpy(
-				msg.body.data(),
-				self->message_body.data() + 1,
-				length - 1
-			);
-
-			self->processMessages(msg);
-			self->readLength();
-
-		}
-
-	);
-}
-
-//process the messages and calls the 
-void Session::processMessages(Message msg){
-
-	switch (msg.type) {
-	case MessageType::Handshake:
-		handleHandshake(static_cast<uint8_t>(msg.body[0]));
-		break;
-	case MessageType::Chat:
-		if (is_selected) {
-			std::string message(msg.body.begin(), msg.body.end());
-			session_callback->read(message);
-		}
-		else {
-			read_queue.push_back(msg);
-		}
-
-		break;
-	}
-
-}
-
-//writes the queue onto the socket
-void Session::flushWriteQueue() {
-
-	auto self = shared_from_this();
-
-
-	asio::async_write(
-		socket,
-		asio::buffer(write_queue.front()),
-		[self](const asio::error_code ec, std::size_t bytes) {
-			if (ec) {
-				self->handleDisconnect();
-				return;
-			}
-
-			self->write_queue.pop_front();
-			if (!self->write_queue.empty()) {
-				self->flushWriteQueue();
-			}
-		}
-	);
-}
-
-//adds the msg to the queue and calls flushWriteQueue
-void Session::queueMessage(Message msg){
-	//if queue not empty that means we're already writing
-	bool writing = !write_queue.empty();
-
-	write_queue.push_back(
-		serialize(msg)
-	);
-
-	if (!writing) {
-		flushWriteQueue();
-	}
-
-}
-
-//handles the handshake and calls the SessionCallbackHandler to store the current session in the map
-void Session::handleHandshake(uint8_t remote_id)
+void Session::start()
 {
-    this->remote_id = remote_id;
-    handshake_complete = true;
-
-    auto cur_session = shared_from_this();
-
-    session_callback->onPeerIdentified(
-        remote_id,
-        cur_session
-    );
+    if (closed) return;
+    try { readLength(); }
+    catch (const std::exception& e) { fail(std::string("Could not start session: ") + e.what()); }
+    catch (...) { fail("Could not start session: unknown error"); }
 }
 
-void Session::selectPeer() {
-	is_selected = true;
-	for (const auto& msg : read_queue) {
-		if (msg.type == MessageType::Chat) {
-			std::string message(msg.body.begin(), msg.body.end());
-			session_callback->read(message);
-		}
-	}
-	read_queue.clear();
-}
-
-void Session::deselectPeer() {
-	is_selected = false;
-}
-
-
-ConnectionDirection Session::getDirection() const
+void Session::initiateHandshake()
 {
-    return direction;
+    if (closed) return;
+    try { queueMessage({MessageType::Handshake, {static_cast<char>(local_id)}}); }
+    catch (const std::exception& e) { fail(std::string("Could not send handshake: ") + e.what()); }
+    catch (...) { fail("Could not send handshake: unknown error"); }
 }
 
-void Session::handleDisconnect()
+void Session::readLength()
 {
-    if (closed)
+    if (closed) return;
+    auto self = shared_from_this();
+    asio::async_read(socket, asio::buffer(message_length),
+        [self](const asio::error_code& ec, std::size_t) {
+            if (ec) { self->fail("Read failed: " + ec.message()); return; }
+            try { self->readBody(); }
+            catch (const std::exception& e) { self->fail(std::string("Read failed: ") + e.what()); }
+            catch (...) { self->fail("Read failed: unknown error"); }
+        });
+}
+
+void Session::readBody()
+{
+    if (closed) return;
+    const uint32_t length =
+        (static_cast<uint32_t>(static_cast<unsigned char>(message_length[0])) << 24) |
+        (static_cast<uint32_t>(static_cast<unsigned char>(message_length[1])) << 16) |
+        (static_cast<uint32_t>(static_cast<unsigned char>(message_length[2])) << 8) |
+         static_cast<uint32_t>(static_cast<unsigned char>(message_length[3]));
+    if (length < 1 || length > MAX_MESSAGE_SIZE) {
+        fail("Invalid message length");
         return;
+    }
 
+    message_body.resize(length);
+    auto self = shared_from_this();
+    asio::async_read(socket, asio::buffer(message_body),
+        [self, length](const asio::error_code& ec, std::size_t) {
+            if (ec) { self->fail("Read failed: " + ec.message()); return; }
+            try {
+                const auto raw_type = static_cast<uint8_t>(self->message_body[0]);
+                Message msg{static_cast<MessageType>(raw_type),
+                    std::vector<char>(self->message_body.begin() + 1, self->message_body.end())};
+                self->processMessages(std::move(msg));
+                if (!self->closed) self->readLength();
+            } catch (const std::exception& e) {
+                self->fail(std::string("Invalid protocol message: ") + e.what());
+            } catch (...) { self->fail("Invalid protocol message: unknown error"); }
+        });
+}
+
+void Session::processMessages(Message msg)
+{
+    if (closed) return;
+    if (msg.type == MessageType::Handshake) {
+        if (handshake_complete || msg.body.size() != 1) {
+            fail("Invalid or repeated handshake"); return;
+        }
+        handleHandshake(static_cast<uint8_t>(msg.body[0]));
+        return;
+    }
+    if (msg.type != MessageType::Chat) { fail("Unknown message type"); return; }
+    if (!handshake_complete) { fail("Chat received before handshake"); return; }
+    if (is_selected) session_callback->read(std::string(msg.body.begin(), msg.body.end()));
+    else read_queue.push_back(std::move(msg));
+}
+
+void Session::flushWriteQueue()
+{
+    if (closed || write_queue.empty()) return;
+    auto self = shared_from_this();
+    asio::async_write(socket, asio::buffer(write_queue.front()),
+        [self](const asio::error_code& ec, std::size_t) {
+            if (ec) { self->fail("Write failed: " + ec.message()); return; }
+            self->write_queue.pop_front();
+            self->flushWriteQueue();
+        });
+}
+
+void Session::queueMessage(Message msg)
+{
+    if (closed) throw std::runtime_error("Session is closed");
+    auto encoded = serialize(msg);
+    const bool writing = !write_queue.empty();
+    write_queue.push_back(std::move(encoded));
+    if (!writing) flushWriteQueue();
+}
+
+void Session::handleHandshake(uint8_t id)
+{
+    remote_id = id;
+    handshake_complete = true;
+    try { session_callback->onPeerIdentified(id, shared_from_this()); }
+    catch (const std::exception& e) { fail(std::string("Handshake callback failed: ") + e.what()); }
+    catch (...) { fail("Handshake callback failed"); }
+}
+
+void Session::selectPeer()
+{
+    if (closed) return;
+    is_selected = true;
+    try {
+        for (const auto& msg : read_queue)
+            if (msg.type == MessageType::Chat)
+                session_callback->read(std::string(msg.body.begin(), msg.body.end()));
+        read_queue.clear();
+    } catch (const std::exception& e) { fail(std::string("Message callback failed: ") + e.what()); }
+    catch (...) { fail("Message callback failed"); }
+}
+
+void Session::deselectPeer() { is_selected = false; }
+ConnectionDirection Session::getDirection() const { return direction; }
+
+void Session::fail(const std::string& reason) noexcept
+{
+    if (closed) return;
+    const bool identified = handshake_complete;
     closed = true;
-
-    asio::error_code ec;
-    socket.shutdown(asio::ip::tcp::socket::shutdown_both, ec);
-    socket.close(ec);
-
-    if (remote_id != 0) {
-        session_callback->onPeerDisconnected(
-            remote_id,
-            shared_from_this()
-        );
+    asio::error_code ignored;
+    socket.cancel(ignored);
+    socket.shutdown(asio::ip::tcp::socket::shutdown_both, ignored);
+    socket.close(ignored);
+    try {
+        interface.printLineError("Session with peer " +
+            (identified ? std::to_string(remote_id) : std::string("(unidentified)")) +
+            " terminated: " + reason);
+    } catch (...) {}
+    if (identified) {
+        try { session_callback->onPeerDisconnected(remote_id, shared_from_this()); }
+        catch (...) {}
     }
 }
 
+void Session::handleDisconnect() { fail("Peer disconnected"); }
+
 void Session::close()
 {
-    if (closed)
-        return;
-
+    if (closed) return;
     closed = true;
-
-    asio::error_code ec;
-    socket.shutdown(
-        asio::ip::tcp::socket::shutdown_both,
-        ec
-    );
-
-    socket.close(ec);
+    asio::error_code ignored;
+    socket.cancel(ignored);
+    socket.shutdown(asio::ip::tcp::socket::shutdown_both, ignored);
+    socket.close(ignored);
 }
-
-

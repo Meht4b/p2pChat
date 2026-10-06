@@ -4,6 +4,7 @@
 #include <ftxui/ftxui.hpp>
 #include <sstream>
 #include <iostream>
+#include <exception>
 
 
 using namespace ftxui;
@@ -14,22 +15,27 @@ ConsoleInterface::ConsoleInterface(Interface& interface)
 }
 
 void ConsoleInterface::printLine(const std::string& message){
+    std::lock_guard<std::mutex> lock(output_mutex);
     output.push_back(">> " + message);
 }
 
 void ConsoleInterface::printLineError(const std::string& message) {
+    std::lock_guard<std::mutex> lock(output_mutex);
     output.push_back("[error] : " + message);
 }
 
 void ConsoleInterface::printLineSuccess(const std::string& message) {
+    std::lock_guard<std::mutex> lock(output_mutex);
     output.push_back("[success] : " + message);
 }
 
 void ConsoleInterface::printLineIndent(const std::string& message) {
+    std::lock_guard<std::mutex> lock(output_mutex);
     output.push_back("  " + message);
 }
 
 void ConsoleInterface::printMessage(const std::string& message, int user_id) {
+    std::lock_guard<std::mutex> lock(output_mutex);
     output.push_back("[" + std::to_string(user_id) + "] : " + message);
 }
 
@@ -40,16 +46,16 @@ void ConsoleInterface::connect(std::istringstream& iss) {
 	if (!(iss >> address >> port) ||
 		port < 1 || port > 65535)
 	{
-		output.push_back("[error] : [usage] connect <address> <port>");
+		printLineError("Usage: connect <address> <port>");
 		return;
 	}
     try {
 		interface.connect(address, port);
     }
     catch (const std::exception& e) {
-        printLine(std::string("[connection error] error ") + e.what());
+        printLineError(std::string("Connection error: ") + e.what());
     } catch (...) {
-        printLine("[connection error] uknown");
+        printLineError("Connection error: unknown error");
     }
 
 }
@@ -61,7 +67,7 @@ void ConsoleInterface::start(std::istringstream& iss)
 
 	if (!(iss >> port >> user) || port < 1 || port > 65535 || user<0 || user >=256)
 	{
-		output.push_back("[error] : [usage] start <port> <user_id>");
+		printLineError("Usage: start <port> <user_id>");
 		return;
 	}
 
@@ -73,6 +79,7 @@ void ConsoleInterface::start(std::istringstream& iss)
 
 void ConsoleInterface::help()
 {
+	std::lock_guard<std::mutex> lock(output_mutex);
 	output.push_back(">>Available commands:");
 	output.push_back("  start <port> <user_id>");
 	output.push_back("  connect <address> <port>");
@@ -84,12 +91,16 @@ void ConsoleInterface::help()
 
 void ConsoleInterface::clear()
 {
+	std::lock_guard<std::mutex> lock(output_mutex);
 	output.clear();
 }
 
 void ConsoleInterface::selectPeer(std::istringstream& iss) {
-    int user;
-    iss >> user;
+    int user = -1;
+    if (!(iss >> user) || user < 0 || user > 255) {
+        printLineError("Usage: selectpeer <user_id>");
+        return;
+    }
     if ( !interface.peerExists(user)) {
         printLineError("User has not been contacted/ user doesn't exist");
         return;
@@ -123,12 +134,15 @@ void ConsoleInterface::handleInput(const std::string& command_line)
             else if (command == "selectpeer") selectPeer(iss);
 			else if (!command.empty())
 			{
-				output.push_back("[error] : Unknown command " + command);
+				printLineError("Unknown command " + command);
 			}
 		}
 		catch (const std::exception& e)
 		{
-			output.push_back(std::string("Error: ") + e.what());
+			printLineError(std::string("Command failed: ") + e.what());
+		}
+		catch (...) {
+			printLineError("Command failed: unknown error");
 		}
 
     }
@@ -182,9 +196,10 @@ void ConsoleInterface::run()
     {
         Elements output_elements;
 
-        for (const auto& line : output)
         {
-            output_elements.push_back(text(line));
+            std::lock_guard<std::mutex> lock(output_mutex);
+            for (const auto& line : output)
+                output_elements.push_back(text(line));
         }
 
         return vbox({

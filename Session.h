@@ -6,6 +6,7 @@
 #include <memory>
 #include <vector>
 #include <array>
+#include <string>
 
 #include "Message.h"
 #include "SessionCallbackHandler.h"
@@ -90,5 +91,7 @@ private:
 	void handleHandshake(uint8_t remote_id);
 
 	void handleDisconnect();
+
+	void fail(const std::string& reason) noexcept;
 
 };

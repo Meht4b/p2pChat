@@ -1,7 +1,9 @@
 #pragma once
 
 #include <string>
+#include <sstream>
 #include <vector>
+#include <mutex>
 
 class Interface;
 
@@ -11,6 +13,7 @@ private:
     Interface& interface;
     std::string input;
     std::vector<std::string> output;
+    mutable std::mutex output_mutex;
     bool peerSelected = false;
 
     void handleInput(const std::string& command);

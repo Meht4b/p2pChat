@@ -17,6 +17,4 @@ public:
 	virtual void read(const std::string& msg) = 0;
 
 	virtual void onPeerDisconnected(uint8_t id, std::shared_ptr<Session> session) = 0;
-private:
-
 };
