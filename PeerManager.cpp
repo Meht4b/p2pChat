@@ -59,16 +59,69 @@ PeerManager::PeerManager(asio::io_context* io,uint8_t peer_id,int port,Interface
     accept();
 }
 
-void PeerManager::onPeerIdentified(uint8_t id, std::shared_ptr<Session> session) {
-		if (active_sessions.contains(id)) {
-			interface.printLineError("session already exists");
-			//delete the session
-		}
-		interface.printLineSuccess("session identified as " + std::to_string(id));
 
-		active_sessions[id] = session;
-	
-	}
+void PeerManager::onPeerIdentified( uint8_t id, std::shared_ptr<Session> session)
+{
+    auto it = active_sessions.find(id);
+
+    // First connection from this peer
+    if (it == active_sessions.end()) {
+        active_sessions[id] = session;
+
+        interface.printLineSuccess(
+            "session identified as " +
+            std::to_string(id)
+        );
+
+        return;
+    }
+
+    auto existing = it->second;
+
+    // Determine which connection should survive.
+    bool keepNew;
+
+    if (peer_id < id) {
+        // Smaller ID keeps outgoing connection.
+        keepNew =
+            session->getDirection() ==
+            ConnectionDirection::Outgoing;
+    }
+    else if (peer_id > id) {
+        // Larger ID keeps incoming connection.
+        keepNew =
+            session->getDirection() ==
+            ConnectionDirection::Incoming;
+    }
+    else {
+        // Same ID as ourselves — invalid.
+        interface.printLineError(
+            "Peer has the same user ID as this peer"
+        );
+
+        session->close();
+        return;
+    }
+
+    if (keepNew) {
+        interface.printLine(
+            "Replacing duplicate connection to peer " +
+            std::to_string(id)
+        );
+
+        active_sessions[id] = session;
+
+        existing->close();
+    }
+    else {
+        interface.printLine(
+            "Rejecting duplicate connection to peer " +
+            std::to_string(id)
+        );
+
+        session->close();
+    }
+}
 
 void PeerManager::accept() {
 	//continously accpets new connections and creates a session object for each of them
@@ -143,7 +196,7 @@ std::vector<uint8_t> PeerManager::showPeers(){
 }
 
 void PeerManager::selectPeer(int user) {
-	if (cur_peer != (uint8_t)-1) {
+	if (cur_peer != (uint8_t)0) {
 		active_sessions[cur_peer]->deselectPeer();
 	}
 	cur_peer = (uint8_t)user;
@@ -161,4 +214,11 @@ void PeerManager::write(const std::string& msg) {
 
 void PeerManager::read(const std::string& msg) {
 	interface.printMessage(msg, cur_peer);
+}
+
+void PeerManager::onPeerDisconnected(uint8_t id, std::shared_ptr<Session> session) {
+	active_sessions.erase(id);
+	if (cur_peer == id) {
+		cur_peer = 0;
+	}
 }

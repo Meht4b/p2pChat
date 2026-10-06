@@ -24,7 +24,7 @@ private:
 	uint8_t peer_id;
 	asio::io_context* io;
 	Interface& interface;
-	uint8_t cur_peer = -1;
+	uint8_t cur_peer = 0;
 	
 public:
 	PeerManager(asio::io_context* io, uint8_t peer_id, int port, Interface& interface);
@@ -40,6 +40,8 @@ public:
 	void read(const std::string& msg) override;
 
 	std::vector<uint8_t> showPeers();
+
+	void onPeerDisconnected(uint8_t id, std::shared_ptr<Session> session) override;
 
 private:
 	void accept();

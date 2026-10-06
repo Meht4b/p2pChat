@@ -11,7 +11,7 @@ private:
     Interface& interface;
     std::string input;
     std::vector<std::string> output;
-    bool peerSelected;
+    bool peerSelected = false;
 
     void handleInput(const std::string& command);
     void start(std::istringstream& iss);

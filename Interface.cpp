@@ -33,11 +33,16 @@ void Interface::setConsole(ConsoleInterface* cs) {
 
 void Interface::start(int port,uint8_t user)
 {
-    if (peer_manager)
+    if (peer_manager) {
         printLineError("PeerManager is already running");
+        return;
+    }
+        
 
-    if (port < 1 || port > 65535)
+    if (port < 1 || port > 65535) {
         printLineError("Port must be between 1 and 65535");
+		return;
+    }
 
     peer_manager = std::make_unique<PeerManager>(&io_context,user, port,*this);
 
@@ -106,3 +111,6 @@ void Interface::printLineIndent(const std::string& message) {
 void Interface::printMessage(const std::string& message, int user_id) {
     console_interface->printMessage(message, user_id);
 }
+
+
+

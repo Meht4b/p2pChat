@@ -50,6 +50,10 @@ private:
 	//stores whether the current peer is selected or not
 	bool is_selected = false;
 
+	bool closed = false;
+	bool handshake_complete = false;
+
+
 public:
 	Session(asio::ip::tcp::socket socket, uint8_t local_id, SessionCallbackHandler* session_callback, ConnectionDirection direction, Interface& interface);
 
@@ -63,6 +67,10 @@ public:
 	void selectPeer();
 
 	void deselectPeer();
+
+	ConnectionDirection getDirection() const;
+
+	void close();
 
 private:
 
@@ -80,5 +88,7 @@ private:
 
 	//handles the handshake and calls the SessionCallbackHandler to store the current session in the map
 	void handleHandshake(uint8_t remote_id);
+
+	void handleDisconnect();
 
 };

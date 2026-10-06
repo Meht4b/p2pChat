@@ -45,8 +45,7 @@ void Session::readLength() {
 		asio::buffer(message_length),
 		[self](const asio::error_code ec, std::size_t bytes) {
 			if (ec) {
-				self->interface.printLineError("peer disconnected user_id = " + std::to_string((int)self->remote_id));
-				
+				self->handleDisconnect();
 				//close the connection
 				return;
 			}
@@ -89,7 +88,7 @@ void Session::readBody() {
 		[self,length](asio::error_code ec, std::size_t bytes) {
 
 			if (ec) {
-				self->interface.printLineError("peer disconnected user_id = " + std::to_string((int)self->remote_id));
+				self->handleDisconnect();
 				return;
 			}
 
@@ -143,6 +142,7 @@ void Session::flushWriteQueue() {
 		asio::buffer(write_queue.front()),
 		[self](const asio::error_code ec, std::size_t bytes) {
 			if (ec) {
+				self->handleDisconnect();
 				return;
 			}
 
@@ -170,10 +170,17 @@ void Session::queueMessage(Message msg){
 }
 
 //handles the handshake and calls the SessionCallbackHandler to store the current session in the map
-void Session::handleHandshake(uint8_t remote_id) {
-	auto cur_session = shared_from_this();
+void Session::handleHandshake(uint8_t remote_id)
+{
+    this->remote_id = remote_id;
+    handshake_complete = true;
 
-	session_callback->onPeerIdentified(remote_id, cur_session);
+    auto cur_session = shared_from_this();
+
+    session_callback->onPeerIdentified(
+        remote_id,
+        cur_session
+    );
 }
 
 void Session::selectPeer() {
@@ -190,4 +197,46 @@ void Session::selectPeer() {
 void Session::deselectPeer() {
 	is_selected = false;
 }
+
+
+ConnectionDirection Session::getDirection() const
+{
+    return direction;
+}
+
+void Session::handleDisconnect()
+{
+    if (closed)
+        return;
+
+    closed = true;
+
+    asio::error_code ec;
+    socket.shutdown(asio::ip::tcp::socket::shutdown_both, ec);
+    socket.close(ec);
+
+    if (remote_id != 0) {
+        session_callback->onPeerDisconnected(
+            remote_id,
+            shared_from_this()
+        );
+    }
+}
+
+void Session::close()
+{
+    if (closed)
+        return;
+
+    closed = true;
+
+    asio::error_code ec;
+    socket.shutdown(
+        asio::ip::tcp::socket::shutdown_both,
+        ec
+    );
+
+    socket.close(ec);
+}
+
 
