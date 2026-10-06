@@ -20,6 +20,7 @@
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="ConsoleInterface.cpp" />
+    <ClCompile Include="Interface.cpp" />
     <ClCompile Include="main.cpp" />
     <ClCompile Include="Message.cpp" />
     <ClCompile Include="PeerManager.cpp" />
@@ -28,6 +29,7 @@
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="ConsoleInterface.h" />
+    <ClInclude Include="Interface.h" />
     <ClInclude Include="Message.h" />
     <ClInclude Include="PeerManager.h" />
     <ClInclude Include="Session.h" />

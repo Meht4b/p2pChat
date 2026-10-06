@@ -3,12 +3,14 @@
 #include <cstring>
 #include <iostream>
 #include <stdexcept>
+#include "Interface.h"
 
-Session::Session(asio::ip::tcp::socket socket, uint8_t local_id, SessionCallbackHandler* session_callback, ConnectionDirection direction) :
+Session::Session(asio::ip::tcp::socket socket, uint8_t local_id, SessionCallbackHandler* session_callback, ConnectionDirection direction,Interface& interface ) :
 		socket(std::move(socket)),
 		local_id(local_id),
 		session_callback(session_callback),
-		direction(direction)
+		direction(direction),
+		interface(interface)
 		
 {
 
@@ -43,8 +45,8 @@ void Session::readLength() {
 		asio::buffer(message_length),
 		[self](const asio::error_code ec, std::size_t bytes) {
 			if (ec) {
-				std::cout << ec << std::endl;
-				std::cout << "disconnecting" << std::endl;
+				self->interface.printLineError("peer disconnected user_id = " + std::to_string((int)self->remote_id));
+				
 				//close the connection
 				return;
 			}
@@ -70,11 +72,13 @@ void Session::readBody() {
 
 
 	if (length < 1) {
-		throw std::runtime_error("Invalid message length");
+		interface.printLineError("Invalid message length");
+		return;
 	}
 
 	if (length > MAX_MESSAGE_SIZE){
-		throw std::runtime_error("Invalid message length");
+		interface.printLineError("Invalid message length");
+		return;
 	}
 
 	message_body.resize(length);
@@ -85,7 +89,7 @@ void Session::readBody() {
 		[self,length](asio::error_code ec, std::size_t bytes) {
 
 			if (ec) {
-				std::cout << ec << std::endl << "disconnecting" << std::endl;
+				self->interface.printLineError("peer disconnected user_id = " + std::to_string((int)self->remote_id));
 				return;
 			}
 

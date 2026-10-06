@@ -10,6 +10,8 @@
 #include "Message.h"
 #include "SessionCallbackHandler.h"
 
+class Interface;
+
 //whether the session had initiated the connection or accepted the connection
 enum class ConnectionDirection : bool
 {
@@ -43,8 +45,10 @@ private:
 	//stores whether it was outgoing or incoming
 	ConnectionDirection direction;
 
+	Interface& interface;
+
 public:
-	Session(asio::ip::tcp::socket socket, uint8_t local_id, SessionCallbackHandler* session_callback, ConnectionDirection direction);
+	Session(asio::ip::tcp::socket socket, uint8_t local_id, SessionCallbackHandler* session_callback, ConnectionDirection direction, Interface& interface);
 
 	void start();
 
