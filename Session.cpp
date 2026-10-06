@@ -119,7 +119,14 @@ void Session::processMessages(Message msg){
 		handleHandshake(static_cast<uint8_t>(msg.body[0]));
 		break;
 	case MessageType::Chat:
-		read_queue.push_back(msg);
+		if (is_selected) {
+			std::string message(msg.body.begin(), msg.body.end());
+			session_callback->read(message);
+		}
+		else {
+			read_queue.push_back(msg);
+		}
+
 		break;
 	}
 
@@ -168,3 +175,19 @@ void Session::handleHandshake(uint8_t remote_id) {
 
 	session_callback->onPeerIdentified(remote_id, cur_session);
 }
+
+void Session::selectPeer() {
+	is_selected = true;
+	for (const auto& msg : read_queue) {
+		if (msg.type == MessageType::Chat) {
+			std::string message(msg.body.begin(), msg.body.end());
+			session_callback->read(message);
+		}
+	}
+	read_queue.clear();
+}
+
+void Session::deselectPeer() {
+	is_selected = false;
+}
+

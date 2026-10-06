@@ -68,24 +68,41 @@ void Interface::showPeers() {
     }
 }
 
+bool Interface::peerExists(int user) {
+    std::vector<uint8_t> vec = peer_manager->showPeers();
+    return (std::find(vec.begin(), vec.end(), (uint8_t)user) != vec.end());
+    
+}
+
+void Interface::selectPeer(int user) {
+    peer_manager->selectPeer(user);
+}
+
 bool Interface::isStarted() const
 {
     return peer_manager != nullptr;
 }
 
+void Interface::write(const std::string& msg) {
+    peer_manager->write(msg);
+}
+
 void Interface::printLine(const std::string& message){
-    console_interface->printLine(">> " + message);
+    console_interface->printLine(message);
 }
 
 void Interface::printLineError(const std::string& message) {
-    console_interface->printLine("[error] : " + message);
+    console_interface->printLineError( message);
 }
 
 void Interface::printLineSuccess(const std::string& message) {
-    console_interface->printLine("[success] : " + message);
+    console_interface->printLineSuccess( message);
 }
 
 void Interface::printLineIndent(const std::string& message) {
-    console_interface->printLine("  " + message);
+    console_interface->printLineIndent( message);
 }
 
+void Interface::printMessage(const std::string& message, int user_id) {
+    console_interface->printMessage(message, user_id);
+}

@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <string>
 
 class Session;
 
@@ -13,6 +14,7 @@ public:
 
 	virtual void onPeerIdentified(uint8_t id, std::shared_ptr<Session> session) = 0;
 
+	virtual void read(const std::string& msg) = 0;
 private:
 
 };

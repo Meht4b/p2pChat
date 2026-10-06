@@ -13,8 +13,24 @@ ConsoleInterface::ConsoleInterface(Interface& interface)
 {
 }
 
-void ConsoleInterface::printLine(const std::string& msg) {
-    output.push_back(msg);
+void ConsoleInterface::printLine(const std::string& message){
+    output.push_back(">> " + message);
+}
+
+void ConsoleInterface::printLineError(const std::string& message) {
+    output.push_back("[error] : " + message);
+}
+
+void ConsoleInterface::printLineSuccess(const std::string& message) {
+    output.push_back("[success] : " + message);
+}
+
+void ConsoleInterface::printLineIndent(const std::string& message) {
+    output.push_back("  " + message);
+}
+
+void ConsoleInterface::printMessage(const std::string& message, int user_id) {
+    output.push_back("[" + std::to_string(user_id) + "] : " + message);
 }
 
 void ConsoleInterface::connect(std::istringstream& iss) {
@@ -63,6 +79,7 @@ void ConsoleInterface::help()
 	output.push_back("  showpeers");
 	output.push_back("  help");
 	output.push_back("  clear");
+	output.push_back("  selectpeer <user_id>");
 }
 
 void ConsoleInterface::clear()
@@ -70,6 +87,19 @@ void ConsoleInterface::clear()
 	output.clear();
 }
 
+void ConsoleInterface::selectPeer(std::istringstream& iss) {
+    int user;
+    iss >> user;
+    if ( !interface.peerExists(user)) {
+        printLineError("User has not been contacted/ user doesn't exist");
+        return;
+    }
+	printLineSuccess("Selected peer " + std::to_string(user));
+    clear();
+    interface.selectPeer(user);
+	peerSelected = true;
+
+}
 
 void ConsoleInterface::showPeers() {
     interface.showPeers();
@@ -78,26 +108,37 @@ void ConsoleInterface::showPeers() {
 // Handles all commands entered by the user
 void ConsoleInterface::handleInput(const std::string& command_line)
 {
-    std::istringstream iss(command_line);
-    std::string command;
-    iss >> command;
+    if (command_line.size() != 0 && command_line[0] == '/') {
+		std::istringstream iss(command_line.substr(1));
+		std::string command;
+		iss >> command;
 
-    try
-    {
-        if (command == "start") start(iss);
-        else if (command == "connect") connect(iss);
-        else if (command == "help") help();
-        else if (command == "clear") clear();
-        else if (command == "showpeers") showPeers();
-        else if (!command.empty())
-        {
-            output.push_back("[error] : Unknown command " + command);
-        }
+		try
+		{
+            if (command == "start") start(iss);
+            else if (command == "connect") connect(iss);
+            else if (command == "help") help();
+            else if (command == "clear") clear();
+            else if (command == "showpeers") showPeers();
+            else if (command == "selectpeer") selectPeer(iss);
+			else if (!command.empty())
+			{
+				output.push_back("[error] : Unknown command " + command);
+			}
+		}
+		catch (const std::exception& e)
+		{
+			output.push_back(std::string("Error: ") + e.what());
+		}
+
     }
-    catch (const std::exception& e)
-    {
-        output.push_back(std::string("Error: ") + e.what());
+    else if (peerSelected) {
+        interface.write(command_line);
     }
+    else {
+        printLineError("illegal command/select peer first");
+    }
+
 }
 // Starts the FTXUI interface
 void ConsoleInterface::run()

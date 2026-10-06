@@ -29,5 +29,10 @@ public:
     void printLineSuccess(const std::string& message);
     void printLineError(const std::string& message);
     void printLineIndent(const std::string& message);
+	void printMessage(const std::string& message, int user_id);
     void showPeers();
+    bool peerExists(int user);
+    void selectPeer(int user);
+    void write(const std::string& msg);
+
 };

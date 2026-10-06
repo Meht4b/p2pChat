@@ -1,5 +1,6 @@
 #include "PeerManager.h"
 #include <iostream>
+#include "Message.h"
 
 PeerManager::PeerManager(asio::io_context* io,uint8_t peer_id,int port,Interface& interface)
     : acceptor(*io),
@@ -141,3 +142,23 @@ std::vector<uint8_t> PeerManager::showPeers(){
 
 }
 
+void PeerManager::selectPeer(int user) {
+	if (cur_peer != (uint8_t)-1) {
+		active_sessions[cur_peer]->deselectPeer();
+	}
+	cur_peer = (uint8_t)user;
+	active_sessions[cur_peer]->selectPeer();
+}
+
+
+void PeerManager::write(const std::string& msg) {
+	active_sessions[cur_peer]->queueMessage(Message(
+		MessageType::Chat,
+		std::vector<char>(msg.begin(), msg.end())
+	));
+	interface.printMessage(msg, peer_id);
+}
+
+void PeerManager::read(const std::string& msg) {
+	interface.printMessage(msg, cur_peer);
+}

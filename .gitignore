@@ -1,0 +1,3 @@
+*.obj
+x64/Debug/ConsoleInterface.obj
+/x64

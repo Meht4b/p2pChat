@@ -47,12 +47,22 @@ private:
 
 	Interface& interface;
 
+	//stores whether the current peer is selected or not
+	bool is_selected = false;
+
 public:
 	Session(asio::ip::tcp::socket socket, uint8_t local_id, SessionCallbackHandler* session_callback, ConnectionDirection direction, Interface& interface);
 
 	void start();
 
 	void initiateHandshake();
+
+	//adds the msg to the queue and calls flushWriteQueue
+	void queueMessage(Message msg);
+
+	void selectPeer();
+
+	void deselectPeer();
 
 private:
 
@@ -67,9 +77,6 @@ private:
 
 	//writes the queue onto the socket
 	void flushWriteQueue();
-
-	//adds the msg to the queue and calls flushWriteQueue
-	void queueMessage(Message msg);
 
 	//handles the handshake and calls the SessionCallbackHandler to store the current session in the map
 	void handleHandshake(uint8_t remote_id);
