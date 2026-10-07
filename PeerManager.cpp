@@ -17,7 +17,6 @@ PeerManager::PeerManager(asio::io_context* context, uint8_t id, int port,
     const asio::ip::tcp::endpoint endpoint(
 	asio::ip::address_v4::any(), static_cast<unsigned short>(port));
 
-cast<unsigned short>(port));
 
     acceptor.open(endpoint.protocol(), ec);
     if (ec) throw asio::system_error(ec);
