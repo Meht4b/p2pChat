@@ -1,231 +1,581 @@
 #include "ConsoleInterface.h"
 #include "Interface.h"
 
-#include <ftxui/ftxui.hpp>
-#include <sstream>
-#include <iostream>
+#include <algorithm>
 #include <exception>
 #include <utility>
 
+#include <ftxui/ftxui.hpp>
 
 using namespace ftxui;
+
+// ===========================================================================
+// View: pure functions that turn data into FTXUI elements.
+// Borderless "floating" layout, ASCII glyphs only.
+// ===========================================================================
+namespace
+{
+    const Color kAccent  = Color::Cyan;      // menu / prompt
+    const Color kSection = Color::Yellow;    // section titles
+    const Color kChat    = Color::Magenta;   // everything related to the active chat
+
+    constexpr int    kSidebarWidth = 32;
+    constexpr size_t kTagWidth     = 6;
+    constexpr size_t kKeyWidth     = 9;
+
+    std::string padRight(std::string s, size_t width)
+    {
+        if (s.size() < width)
+            s.resize(width, ' ');
+        return s;
+    }
+
+    std::string peerLabel(uint8_t peer_id)
+    {
+        return "peer " + std::to_string(static_cast<int>(peer_id));
+    }
+
+    // ---- log entries -----------------------------------------------------
+
+    struct EntryStyle
+    {
+        std::string tag;
+        Color tag_color;
+        Color text_color;
+        bool bold_text;
+    };
+
+    EntryStyle styleOf(const LogEntry& entry)
+    {
+        switch (entry.level)
+        {
+        case LogLevel::Success:
+            return { "ok", Color::Green, Color::GreenLight, false };
+        case LogLevel::Error:
+            return { "err", Color::Red, Color::RedLight, false };
+        case LogLevel::Detail:
+            return { "", Color::Default, kAccent, false };
+        case LogLevel::Command:
+            return { ">", kAccent, Color::Default, true };
+        case LogLevel::Incoming:
+            return { "[" + std::to_string(static_cast<int>(entry.peer_id)) + "]",
+                     kChat, Color::Default, false };
+        case LogLevel::Outgoing:
+            return { "you", Color::BlueLight, Color::Default, false };
+        case LogLevel::Info:
+        default:
+            return { "..", Color::GrayLight, Color::Default, false };
+        }
+    }
+
+    Element renderEntry(const LogEntry& entry)
+    {
+        const EntryStyle style = styleOf(entry);
+
+        Element body = paragraph(entry.text) | color(style.text_color) | flex;
+        if (style.bold_text)
+            body = body | bold;
+
+        return hbox({
+            text(padRight(style.tag, kTagWidth)) | bold | color(style.tag_color),
+            std::move(body),
+        });
+    }
+
+    // "Activity" in the menu, a highlighted chat banner while chatting.
+    Element renderLogHeader(const ConsoleStatus& status)
+    {
+        if (!status.selected_peer)
+            return text("Activity") | bold | color(kSection);
+
+        return hbox({
+            text(" CHAT ") | bold | color(Color::Black) | bgcolor(kChat),
+            text("  " + peerLabel(*status.selected_peer)) | bold | color(kChat),
+            filler(),
+            text("/leave to go back") | dim,
+        });
+    }
+
+    Element renderLog(const std::vector<LogEntry>& log, const ConsoleStatus& status)
+    {
+        Elements rows;
+        for (const auto& entry : log)
+            rows.push_back(renderEntry(entry));
+
+        if (rows.empty())
+            rows.push_back(text("nothing yet") | dim);
+        else
+            rows.back() = rows.back() | focus;      // pin the view to the newest line
+
+        return vbox({
+            renderLogHeader(status),
+            text(""),
+            vbox(std::move(rows)) | yframe | flex,
+        }) | flex;
+    }
+
+    // ---- title -----------------------------------------------------------
+
+    Element renderTitle(const ConsoleStatus& status)
+    {
+        Elements row = {
+            text("p2p") | bold | color(kAccent),
+            text(" chat") | bold,
+        };
+
+        if (status.selected_peer)
+        {
+            row.push_back(text("  /  ") | dim);
+            row.push_back(text(peerLabel(*status.selected_peer)) | bold | color(kChat));
+        }
+
+        row.push_back(filler());
+        row.push_back(status.online
+            ? text("* online") | bold | color(Color::Green)
+            : text("* offline") | color(Color::GrayLight));
+
+        return hbox(std::move(row));
+    }
+
+    // ---- sidebar ---------------------------------------------------------
+
+    Element section(const std::string& title, Elements items)
+    {
+        Elements rows;
+        rows.push_back(text(title) | bold | color(kSection));
+        for (auto& item : items)
+            rows.push_back(hbox({ text("  "), std::move(item) }));
+        return vbox(std::move(rows));
+    }
+
+    Element keyValue(const std::string& key, const std::string& value)
+    {
+        return hbox({
+            text(padRight(key, kKeyWidth)) | dim,
+            text(value) | bold,
+        });
+    }
+
+    Element renderStatusSection(const ConsoleStatus& status)
+    {
+        if (!status.online)
+        {
+            return section("Status", {
+                text("not started") | dim,
+                text("run /start below") | dim,
+            });
+        }
+
+        return section("Status", {
+            keyValue("port",    std::to_string(status.port)),
+            keyValue("user id", std::to_string(static_cast<int>(status.user_id))),
+        });
+    }
+
+    // The peer being chatted with is shown as a highlighted block.
+    Element renderPeerRow(uint8_t peer_id, bool chatting)
+    {
+        const std::string label = " " + peerLabel(peer_id) + " ";
+        if (!chatting)
+            return text(label);
+
+        return hbox({
+            text(label) | bold | color(Color::Black) | bgcolor(kChat),
+            text(" chatting") | color(kChat),
+        });
+    }
+
+    Element renderPeersSection(const ConsoleStatus& status)
+    {
+        Elements rows;
+        for (uint8_t peer_id : status.peers)
+            rows.push_back(renderPeerRow(peer_id, status.selected_peer == peer_id));
+
+        if (rows.empty())
+            rows.push_back(text("none yet") | dim);
+
+        return section("Peers (" + std::to_string(status.peers.size()) + ")", std::move(rows));
+    }
+
+    Element renderCommandsSection(const std::vector<std::string>& usages)
+    {
+        Elements items;
+        for (const auto& usage : usages)
+            items.push_back(text(usage) | color(kAccent));
+        return section("Commands", std::move(items));
+    }
+
+    Element renderSidebar(const ConsoleStatus& status,
+                          const std::vector<std::string>& usages)
+    {
+        return vbox({
+            renderStatusSection(status),
+            text(""),
+            renderPeersSection(status),
+            text(""),
+            renderCommandsSection(usages),
+        }) | size(WIDTH, EQUAL, kSidebarWidth);
+    }
+
+    // ---- page ------------------------------------------------------------
+
+    Element renderPrompt(const ConsoleStatus& status, Element input_field)
+    {
+        Element label = status.selected_peer
+            ? text(peerLabel(*status.selected_peer) + " > ") | bold | color(kChat)
+            : text("> ") | bold | color(kAccent);
+
+        return hbox({
+            std::move(label),
+            std::move(input_field) | flex,
+        });
+    }
+
+    Element renderPage(const ConsoleSnapshot& snapshot,
+                       const std::vector<std::string>& usages,
+                       Element input_field)
+    {
+        Element body = hbox({
+            renderLog(snapshot.log, snapshot.status),
+            text("    "),
+            renderSidebar(snapshot.status, usages),
+        }) | flex;
+
+        return hbox({
+            text("   "),
+            vbox({
+                text(""),
+                renderTitle(snapshot.status),
+                text(""),
+                std::move(body),
+                text(""),
+                renderPrompt(snapshot.status, std::move(input_field)),
+                text(""),
+            }) | flex,
+            text("   "),
+        });
+    }
+
+    // ---- input component -------------------------------------------------
+
+    // Text field that calls `on_submit` with the line when Enter is pressed.
+    Component makeInput(std::string* content,
+                        std::function<void(const std::string&)> on_submit)
+    {
+        InputOption option;
+        option.transform = [](InputState state)
+        {
+            if (state.is_placeholder)
+                return state.element | dim;
+            return state.element;
+        };
+
+        auto field = Input(content, "message or /command...", option);
+
+        return field | CatchEvent(
+            [content, on_submit = std::move(on_submit)](Event event)
+            {
+                if (event != Event::Return)
+                    return false;
+
+                if (!content->empty())
+                {
+                    const std::string line = std::move(*content);
+                    content->clear();
+                    on_submit(line);
+                }
+                return true;
+            });
+    }
+
+    // Runs a callback when it goes out of scope (also on exceptions).
+    class ScopeExit
+    {
+    public:
+        explicit ScopeExit(std::function<void()> fn) : fn_(std::move(fn)) {}
+        ~ScopeExit() { if (fn_) fn_(); }
+        ScopeExit(const ScopeExit&) = delete;
+        ScopeExit& operator=(const ScopeExit&) = delete;
+    private:
+        std::function<void()> fn_;
+    };
+}
+
+// ===========================================================================
+// Controller: commands, input handling, thread-safe state.
+// ===========================================================================
 
 ConsoleInterface::ConsoleInterface(Interface& interface)
     : interface(interface)
 {
+    commands = {
+        { "start",      "/start <port> <user_id>",
+          [this](std::istringstream& args) { return start(args); } },
+
+        { "connect",    "/connect <address> <port>",
+          [this](std::istringstream& args) { return connect(args); } },
+
+        { "showpeers",  "/showpeers",
+          [this](std::istringstream&) { this->interface.showPeers(); return true; } },
+
+        { "selectpeer", "/selectpeer <user_id>",
+          [this](std::istringstream& args) { return selectPeer(args); } },
+
+        { "leave",      "/leave",
+          [this](std::istringstream& args) { return leavePeer(args); } },
+
+        { "help",       "/help",
+          [this](std::istringstream&) { showHelp(); return true; } },
+
+        { "clear",      "/clear",
+          [this](std::istringstream&) { clearLog(); return true; } },
+    };
 }
 
-void ConsoleInterface::appendOutput(std::string line)
+// ---- log output ------------------------------------------------------------
+
+void ConsoleInterface::printLine(const std::string& msg)        { append({ LogLevel::Info,     msg }); }
+void ConsoleInterface::printLineSuccess(const std::string& msg) { append({ LogLevel::Success,  msg }); }
+void ConsoleInterface::printLineError(const std::string& msg)   { append({ LogLevel::Error,    msg }); }
+void ConsoleInterface::printLineIndent(const std::string& msg)  { append({ LogLevel::Detail,   msg }); }
+void ConsoleInterface::printSentMessage(const std::string& msg) { append({ LogLevel::Outgoing, msg }); }
+
+void ConsoleInterface::printMessage(const std::string& msg, int user_id)
 {
-    std::lock_guard<std::mutex> lock(output_mutex);
-    output.push_back(std::move(line));
+    append({ LogLevel::Incoming, msg, static_cast<uint8_t>(user_id) });
 }
 
-std::vector<std::string> ConsoleInterface::snapshotOutput() const
+// ---- status ----------------------------------------------------------------
+
+void ConsoleInterface::setOnline(uint16_t port, uint8_t user_id)
 {
-    std::lock_guard<std::mutex> lock(output_mutex);
-    return output;
+    updateStatus([&](ConsoleStatus& s)
+    {
+        s = ConsoleStatus{};
+        s.online = true;
+        s.port = port;
+        s.user_id = user_id;
+    });
 }
 
-void ConsoleInterface::printLine(const std::string& message){
-    appendOutput(">> " + message);
-}
-
-void ConsoleInterface::printLineError(const std::string& message) {
-    appendOutput("[error] : " + message);
-}
-
-void ConsoleInterface::printLineSuccess(const std::string& message) {
-    appendOutput("[success] : " + message);
-}
-
-void ConsoleInterface::printLineIndent(const std::string& message) {
-    appendOutput("  " + message);
-}
-
-void ConsoleInterface::printMessage(const std::string& message, int user_id) {
-    appendOutput("[" + std::to_string(user_id) + "] : " + message);
-}
-
-void ConsoleInterface::connect(std::istringstream& iss) {
-	std::string address;
-	int port;
-
-	if (!(iss >> address >> port) ||
-		port < 1 || port > 65535)
-	{
-		printLineError("Usage: connect <address> <port>");
-		return;
-	}
-    try {
-		interface.connect(address, port);
-    }
-    catch (const std::exception& e) {
-        printLineError(std::string("Connection error: ") + e.what());
-    } catch (...) {
-        printLineError("Connection error: unknown error");
-    }
-
-}
-
-void ConsoleInterface::start(std::istringstream& iss) 
+void ConsoleInterface::setOffline()
 {
-	int port;
-	int user;
-
-	if (!(iss >> port >> user) || port < 1 || port > 65535 || user<0 || user >=256)
-	{
-		printLineError("Usage: start <port> <user_id>");
-		return;
-	}
-
-
-
-
-	interface.start(port, (uint8_t)user);
+    updateStatus([](ConsoleStatus& s) { s = ConsoleStatus{}; });
 }
 
-void ConsoleInterface::help()
+void ConsoleInterface::onPeerConnected(uint8_t peer_id)
 {
-	appendOutput(">>Available commands:");
-	appendOutput("  start <port> <user_id>");
-	appendOutput("  connect <address> <port>");
-	appendOutput("  showpeers");
-	appendOutput("  help");
-	appendOutput("  clear");
-	appendOutput("  selectpeer <user_id>");
+    updateStatus([&](ConsoleStatus& s) { s.peers.insert(peer_id); });
 }
 
-void ConsoleInterface::clear()
+void ConsoleInterface::onPeerDisconnected(uint8_t peer_id)
 {
-	std::lock_guard<std::mutex> lock(output_mutex);
-	output.clear();
+    updateStatus([&](ConsoleStatus& s)
+    {
+        s.peers.erase(peer_id);
+        if (s.selected_peer == peer_id)
+            s.selected_peer.reset();
+    });
 }
 
-void ConsoleInterface::selectPeer(std::istringstream& iss) {
-    int user = -1;
-    if (!(iss >> user) || user < 0 || user > 255) {
-        printLineError("Usage: selectpeer <user_id>");
+void ConsoleInterface::setSelectedPeer(std::optional<uint8_t> peer_id)
+{
+    updateStatus([&](ConsoleStatus& s) { s.selected_peer = peer_id; });
+}
+
+// ---- input handling --------------------------------------------------------
+
+// "/command args" runs a command; anything else is sent to the selected peer.
+void ConsoleInterface::handleInput(const std::string& line)
+{
+    if (line.empty())
+        return;
+
+    if (line.front() == '/')
+        runCommand(line.substr(1));
+    else if (hasSelectedPeer())
+        interface.write(line);
+    else
+        printLineError("No peer selected: use /selectpeer <user_id>");
+}
+
+void ConsoleInterface::runCommand(const std::string& command_line)
+{
+    append({ LogLevel::Command, "/" + command_line });
+
+    std::istringstream args(command_line);
+    std::string name;
+    args >> name;
+    if (name.empty())
+        return;
+
+    const Command* command = findCommand(name);
+    if (!command)
+    {
+        printLineError("Unknown command " + name);
         return;
     }
-    if ( !interface.peerExists(user)) {
-        printLineError("User has not been contacted/ user doesn't exist");
-        return;
+
+    try
+    {
+        if (!command->handler(args))
+            printLineError("Usage: " + command->usage);
     }
-	printLineSuccess("Selected peer " + std::to_string(user));
-    clear();
-    interface.selectPeer(user);
-	peerSelected = true;
-
+    catch (const std::exception& e)
+    {
+        printLineError(std::string("Command failed: ") + e.what());
+    }
+    catch (...)
+    {
+        printLineError("Command failed: unknown error");
+    }
 }
 
-void ConsoleInterface::showPeers() {
-    interface.showPeers();
-}
-
-// Handles all commands entered by the user
-void ConsoleInterface::handleInput(const std::string& command_line)
+const ConsoleInterface::Command* ConsoleInterface::findCommand(const std::string& name) const
 {
-    if (command_line.size() != 0 && command_line[0] == '/') {
-		std::istringstream iss(command_line.substr(1));
-		std::string command;
-		iss >> command;
-
-		try
-		{
-            if (command == "start") start(iss);
-            else if (command == "connect") connect(iss);
-            else if (command == "help") help();
-            else if (command == "clear") clear();
-            else if (command == "showpeers") showPeers();
-            else if (command == "selectpeer") selectPeer(iss);
-			else if (!command.empty())
-			{
-				printLineError("Unknown command " + command);
-			}
-		}
-		catch (const std::exception& e)
-		{
-			printLineError(std::string("Command failed: ") + e.what());
-		}
-		catch (...) {
-			printLineError("Command failed: unknown error");
-		}
-
-    }
-    else if (peerSelected) {
-        interface.write(command_line);
-    }
-    else {
-        printLineError("illegal command/select peer first");
-    }
-
+    auto it = std::find_if(commands.begin(), commands.end(),
+        [&](const Command& c) { return c.name == name; });
+    return it == commands.end() ? nullptr : &*it;
 }
-// Starts the FTXUI interface
+
+std::vector<std::string> ConsoleInterface::commandUsages() const
+{
+    std::vector<std::string> usages;
+    usages.reserve(commands.size());
+    for (const auto& command : commands)
+        usages.push_back(command.usage);
+    return usages;
+}
+
+// ---- commands --------------------------------------------------------------
+
+bool ConsoleInterface::start(std::istringstream& args)
+{
+    int port, user;
+    if (!(args >> port >> user) || port < 1 || port > 65535 || user < 0 || user > 255)
+        return false;
+
+    interface.start(port, static_cast<uint8_t>(user));
+    return true;
+}
+
+bool ConsoleInterface::connect(std::istringstream& args)
+{
+    std::string address;
+    int port;
+    if (!(args >> address >> port) || port < 1 || port > 65535)
+        return false;
+
+    interface.connect(address, port);
+    return true;
+}
+
+bool ConsoleInterface::selectPeer(std::istringstream& args)
+{
+    int user;
+    if (!(args >> user) || user < 0 || user > 255)
+        return false;
+
+    if (!interface.peerExists(user))
+    {
+        printLineError("User has not been contacted / doesn't exist");
+        return true;
+    }
+
+    clearLog();
+    setSelectedPeer(static_cast<uint8_t>(user));
+    printLineSuccess("Now chatting with peer " + std::to_string(user));
+    interface.selectPeer(user);     // queued messages are delivered after this line
+    return true;
+}
+
+// Leaves the active chat and returns to the main menu.
+bool ConsoleInterface::leavePeer(std::istringstream&)
+{
+    if (!hasSelectedPeer())
+    {
+        printLineError("No peer selected");
+        return true;
+    }
+
+    interface.deselectPeer();
+    setSelectedPeer(std::nullopt);
+    clearLog();
+    printLine("Back to main menu");
+    return true;
+}
+
+void ConsoleInterface::showHelp()
+{
+    printLine("Available commands:");
+    for (const auto& command : commands)
+        printLineIndent(command.usage);
+}
+
+void ConsoleInterface::clearLog()
+{
+    std::lock_guard<std::mutex> lock(state_mutex);
+    output.clear();
+    redrawLocked();
+}
+
+// ---- thread-safe state access ----------------------------------------------
+
+void ConsoleInterface::append(LogEntry entry)
+{
+    std::lock_guard<std::mutex> lock(state_mutex);
+    output.push_back(std::move(entry));
+    redrawLocked();
+}
+
+void ConsoleInterface::updateStatus(const std::function<void(ConsoleStatus&)>& change)
+{
+    std::lock_guard<std::mutex> lock(state_mutex);
+    change(status);
+    redrawLocked();
+}
+
+bool ConsoleInterface::hasSelectedPeer() const
+{
+    std::lock_guard<std::mutex> lock(state_mutex);
+    return status.selected_peer.has_value();
+}
+
+ConsoleSnapshot ConsoleInterface::snapshot() const
+{
+    std::lock_guard<std::mutex> lock(state_mutex);
+    return { output, status };
+}
+
+void ConsoleInterface::setRedraw(std::function<void()> redraw)
+{
+    std::lock_guard<std::mutex> lock(state_mutex);
+    request_redraw = std::move(redraw);
+}
+
+// Wakes the UI thread so new output shows up without waiting for a keypress.
+void ConsoleInterface::redrawLocked() const
+{
+    if (request_redraw)
+        request_redraw();
+}
+
+// ---- UI loop ---------------------------------------------------------------
+
 void ConsoleInterface::run()
 {
     auto screen = ScreenInteractive::Fullscreen();
 
-    // Configure the input field
-    InputOption input_option;
+    auto input_field = makeInput(&input,
+        [this](const std::string& line) { handleInput(line); });
 
-    input_option.transform = [](InputState state)
+    auto page = Renderer(input_field, [&]
     {
-        return state.element;
-    };
-
-    auto input_component =
-        Input(&input, "Enter command...", input_option);
-
-
-    // Handle keyboard events
-    input_component |= CatchEvent([this](Event event)
-    {
-        if (event == Event::Return)
-        {
-            if (!input.empty())
-            {
-
-                handleInput(input);
-
-                input.clear();
-            }
-
-            return true;
-        }
-
-        return false;
+        return renderPage(snapshot(), commandUsages(), input_field->Render());
     });
 
+    setRedraw([&screen] { screen.PostEvent(Event::Custom); });
+    ScopeExit unbind([this] { setRedraw(nullptr); });
 
-    // Render the interface
-    auto component = Renderer(input_component, [this, &input_component]
-    {
-        Elements output_elements;
-        const auto lines = snapshotOutput();
-        for (const auto& line : lines)
-            output_elements.push_back(text(line));
-
-        return vbox({
-
-            text("P2P CHAT") | bold,
-
-            separator(),
-
-            vbox(std::move(output_elements)) | flex,
-
-            separator(),
-
-            hbox({
-                text(">> "),
-                input_component->Render() | flex
-            })
-
-        });
-    });
-
-
-    // Start the event loop
-    screen.Loop(component);
+    screen.Loop(page);
 }
-

@@ -39,6 +39,8 @@ public:
 
 	void selectPeer(int user);
 
+	void deselectPeer();
+
 	void write(const std::string& msg);
 
 	void read(uint8_t peer_id, const std::string& msg) override;

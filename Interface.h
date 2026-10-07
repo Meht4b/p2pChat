@@ -33,9 +33,11 @@ public:
     void printLineError(const std::string& message);
     void printLineIndent(const std::string& message);
 	void printMessage(const std::string& message, int user_id);
+    void printSentMessage(const std::string& message);
     void showPeers();
     bool peerExists(int user);
     void selectPeer(int user);
+    void deselectPeer();
     void write(const std::string& msg);
 
     void onPeerManagerStarted(uint16_t port, uint8_t local_id) override;

@@ -176,6 +176,17 @@ void PeerManager::selectPeer(int user)
     });
 }
 
+void PeerManager::deselectPeer()
+{
+    std::lock_guard<std::recursive_mutex> lock(state_mutex);
+    if (cur_peer < 0) return;
+    auto it = active_sessions.find(static_cast<uint8_t>(cur_peer));
+    cur_peer = -1;
+    if (it == active_sessions.end()) return;
+    auto session = it->second;
+    asio::post(*io, [session] { session->deselectPeer(); });
+}
+
 void PeerManager::write(const std::string& msg)
 {
     std::lock_guard<std::recursive_mutex> lock(state_mutex);

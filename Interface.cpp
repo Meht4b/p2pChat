@@ -100,6 +100,12 @@ void Interface::selectPeer(int user)
     peer_manager->selectPeer(user);
 }
 
+void Interface::deselectPeer()
+{
+    if (!peer_manager || !peer_manager->isRunning()) { printLineError("Peer manager is not running"); return; }
+    peer_manager->deselectPeer();
+}
+
 bool Interface::isStarted() const { return peer_manager && peer_manager->isRunning(); }
 
 void Interface::write(const std::string& msg)
@@ -112,11 +118,13 @@ void Interface::onPeerManagerStarted(uint16_t port, uint8_t local_id)
 {
     printLineSuccess("Peer manager started on port " + std::to_string(port) +
         " with user ID " + std::to_string(local_id));
+    if (console_interface) console_interface->setOnline(port, local_id);
 }
 
 void Interface::onPeerManagerError(const asio::error_code& error)
 {
     printLineError("Peer manager stopped: " + error.message());
+    if (console_interface) console_interface->setOffline();
 }
 
 void Interface::onPeerOperationError(const asio::error_code& error)
@@ -137,6 +145,7 @@ void Interface::onPeerConnection(bool incoming, const asio::error_code& error)
 void Interface::onPeerIdentified(uint8_t peer_id)
 {
     printLineSuccess("Connected to peer " + std::to_string(peer_id));
+    if (console_interface) console_interface->onPeerConnected(peer_id);
 }
 
 void Interface::onDuplicatePeerConnection(uint8_t peer_id, bool new_connection_kept)
@@ -148,6 +157,7 @@ void Interface::onDuplicatePeerConnection(uint8_t peer_id, bool new_connection_k
 void Interface::onPeerDisconnected(uint8_t peer_id)
 {
     printLine("Peer " + std::to_string(peer_id) + " disconnected");
+    if (console_interface) console_interface->onPeerDisconnected(peer_id);
 }
 
 void Interface::onPeerSessionError(bool identified, uint8_t peer_id,
@@ -162,9 +172,9 @@ void Interface::onPeerMessage(uint8_t peer_id, const std::string& message)
     printMessage(message, peer_id);
 }
 
-void Interface::onLocalMessageSent(uint8_t local_id, const std::string& message)
+void Interface::onLocalMessageSent(uint8_t /*local_id*/, const std::string& message)
 {
-    printMessage(message, local_id);
+    printSentMessage(message);
 }
 
 void Interface::printLine(const std::string& msg) { if (console_interface) console_interface->printLine(msg); }
@@ -172,3 +182,4 @@ void Interface::printLineError(const std::string& msg) { if (console_interface) 
 void Interface::printLineSuccess(const std::string& msg) { if (console_interface) console_interface->printLineSuccess(msg); }
 void Interface::printLineIndent(const std::string& msg) { if (console_interface) console_interface->printLineIndent(msg); }
 void Interface::printMessage(const std::string& msg, int id) { if (console_interface) console_interface->printMessage(msg, id); }
+void Interface::printSentMessage(const std::string& msg) { if (console_interface) console_interface->printSentMessage(msg); }
