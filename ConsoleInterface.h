@@ -16,6 +16,8 @@ private:
     mutable std::mutex output_mutex;
     bool peerSelected = false;
 
+    void appendOutput(std::string line);
+    std::vector<std::string> snapshotOutput() const;
     void handleInput(const std::string& command);
     void start(std::istringstream& iss);
     void help();

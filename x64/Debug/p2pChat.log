@@ -2,6 +2,34 @@
   SessionCallbackHandler.h
   Compiling...
   SessionCallbackHandler.h
+  Please define _WIN32_WINNT or _WIN32_WINDOWS appropriately. For example:
+  - add -D_WIN32_WINNT=0x0601 to the compiler command line; or
+  - add _WIN32_WINNT=0x0601 to your project's Preprocessor Definitions.
+  Assuming _WIN32_WINNT=0x0601 (i.e. Windows 7 target).
+C:\cpplib\asio-1.36.0\include\asio\detail\socket_types.hpp(187,14): warning C5260: the constant variable 'asio::detail::invalid_socket' has internal linkage in an included header file context, but external linkage in imported header unit context; consider declaring it 'inline' as well if it will be shared across translation units, or 'static' to express intent to use it local to this translation unit
+  (compiling source file 'SessionCallbackHandler.h')
+  
+C:\cpplib\asio-1.36.0\include\asio\detail\socket_types.hpp(188,11): warning C5260: the constant variable 'asio::detail::socket_error_retval' has internal linkage in an included header file context, but external linkage in imported header unit context; consider declaring it 'inline' as well if it will be shared across translation units, or 'static' to express intent to use it local to this translation unit
+  (compiling source file 'SessionCallbackHandler.h')
+  
+C:\cpplib\asio-1.36.0\include\asio\detail\socket_types.hpp(189,11): warning C5260: the constant variable 'asio::detail::max_addr_v4_str_len' has internal linkage in an included header file context, but external linkage in imported header unit context; consider declaring it 'inline' as well if it will be shared across translation units, or 'static' to express intent to use it local to this translation unit
+  (compiling source file 'SessionCallbackHandler.h')
+  
+C:\cpplib\asio-1.36.0\include\asio\detail\socket_types.hpp(190,11): warning C5260: the constant variable 'asio::detail::max_addr_v6_str_len' has internal linkage in an included header file context, but external linkage in imported header unit context; consider declaring it 'inline' as well if it will be shared across translation units, or 'static' to express intent to use it local to this translation unit
+  (compiling source file 'SessionCallbackHandler.h')
+  
+C:\cpplib\asio-1.36.0\include\asio\detail\socket_types.hpp(288,11): warning C5260: the constant variable 'asio::detail::max_iov_len' has internal linkage in an included header file context, but external linkage in imported header unit context; consider declaring it 'inline' as well if it will be shared across translation units, or 'static' to express intent to use it local to this translation unit
+  (compiling source file 'SessionCallbackHandler.h')
+  
+C:\cpplib\asio-1.36.0\include\asio\detail\socket_types.hpp(422,11): warning C5260: the constant variable 'asio::detail::custom_socket_option_level' has internal linkage in an included header file context, but external linkage in imported header unit context; consider declaring it 'inline' as well if it will be shared across translation units, or 'static' to express intent to use it local to this translation unit
+  (compiling source file 'SessionCallbackHandler.h')
+  
+C:\cpplib\asio-1.36.0\include\asio\detail\socket_types.hpp(423,11): warning C5260: the constant variable 'asio::detail::enable_connection_aborted_option' has internal linkage in an included header file context, but external linkage in imported header unit context; consider declaring it 'inline' as well if it will be shared across translation units, or 'static' to express intent to use it local to this translation unit
+  (compiling source file 'SessionCallbackHandler.h')
+  
+C:\cpplib\asio-1.36.0\include\asio\detail\socket_types.hpp(424,11): warning C5260: the constant variable 'asio::detail::always_fail_option' has internal linkage in an included header file context, but external linkage in imported header unit context; consider declaring it 'inline' as well if it will be shared across translation units, or 'static' to express intent to use it local to this translation unit
+  (compiling source file 'SessionCallbackHandler.h')
+  
   ConsoleInterface.cpp
   Please define _WIN32_WINNT or _WIN32_WINDOWS appropriately. For example:
   - add -D_WIN32_WINNT=0x0601 to the compiler command line; or
@@ -12,7 +40,6 @@
   - add -D_WIN32_WINNT=0x0601 to the compiler command line; or
   - add _WIN32_WINNT=0x0601 to your project's Preprocessor Definitions.
   Assuming _WIN32_WINNT=0x0601 (i.e. Windows 7 target).
-  Message.cpp
   PeerManager.cpp
   Please define _WIN32_WINNT or _WIN32_WINDOWS appropriately. For example:
   - add -D_WIN32_WINNT=0x0601 to the compiler command line; or

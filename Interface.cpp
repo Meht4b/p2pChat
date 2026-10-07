@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <exception>
 #include <random>
+#include <system_error>
 
 uint8_t generateUserId()
 {
@@ -32,8 +33,21 @@ void Interface::setConsole(ConsoleInterface* cs) { console_interface = cs; }
 
 void Interface::start(int port, uint8_t user)
 {
-    if (peer_manager) { printLineError("PeerManager is already running"); return; }
+    if (peer_manager && peer_manager->isRunning()) {
+        printLineError("PeerManager is already running");
+        return;
+    }
     if (port < 1 || port > 65535) { printLineError("Port must be between 1 and 65535"); return; }
+
+    // A stopped manager can remain after a fatal accept/network error. Reap its
+    // worker and manager before restarting the io_context and accepting /start.
+    if (network_thread.joinable()) {
+        io_context.stop();
+        network_thread.join();
+    }
+    peer_manager.reset();
+    io_context.restart();
+
     try {
         auto manager = std::make_unique<PeerManager>(&io_context, user, port, *this);
         peer_manager = std::move(manager);
@@ -47,12 +61,15 @@ void Interface::start(int port, uint8_t user)
                 printLineError("Network loop stopped by an unknown error");
             }
         });
-    } catch (const std::exception& e) {
+    } catch (const asio::system_error& e) {
         peer_manager.reset();
-        printLineError(std::string("Could not start peer manager: ") + e.what());
+        onPeerManagerError(e.code());
+    } catch (const std::exception&) {
+        peer_manager.reset();
+        onPeerManagerError(asio::error::make_error_code(asio::error::fault));
     } catch (...) {
         peer_manager.reset();
-        printLineError("Could not start peer manager: unknown error");
+        onPeerManagerError(asio::error::make_error_code(asio::error::fault));
     }
 }
 
@@ -89,6 +106,65 @@ void Interface::write(const std::string& msg)
 {
     if (!peer_manager || !peer_manager->isRunning()) { printLineError("Peer manager is not running"); return; }
     peer_manager->write(msg);
+}
+
+void Interface::onPeerManagerStarted(uint16_t port, uint8_t local_id)
+{
+    printLineSuccess("Peer manager started on port " + std::to_string(port) +
+        " with user ID " + std::to_string(local_id));
+}
+
+void Interface::onPeerManagerError(const asio::error_code& error)
+{
+    printLineError("Peer manager stopped: " + error.message());
+}
+
+void Interface::onPeerOperationError(const asio::error_code& error)
+{
+    printLineError("Peer operation failed: " + error.message());
+}
+
+void Interface::onPeerConnection(bool incoming, const asio::error_code& error)
+{
+    if (error) {
+        printLineError(std::string(incoming ? "Incoming connection failed: " : "Connection failed: ") +
+            error.message());
+    } else {
+        printLineSuccess(incoming ? "Incoming connection accepted" : "Connection established");
+    }
+}
+
+void Interface::onPeerIdentified(uint8_t peer_id)
+{
+    printLineSuccess("Connected to peer " + std::to_string(peer_id));
+}
+
+void Interface::onDuplicatePeerConnection(uint8_t peer_id, bool new_connection_kept)
+{
+    printLine(std::string(new_connection_kept ? "Replaced" : "Rejected") +
+        " duplicate connection to peer " + std::to_string(peer_id));
+}
+
+void Interface::onPeerDisconnected(uint8_t peer_id)
+{
+    printLine("Peer " + std::to_string(peer_id) + " disconnected");
+}
+
+void Interface::onPeerSessionError(bool identified, uint8_t peer_id,
+    const asio::error_code& error)
+{
+    const std::string peer = identified ? " with peer " + std::to_string(peer_id) : " before peer identification";
+    printLineError("Session terminated" + peer + ": " + error.message());
+}
+
+void Interface::onPeerMessage(uint8_t peer_id, const std::string& message)
+{
+    printMessage(message, peer_id);
+}
+
+void Interface::onLocalMessageSent(uint8_t local_id, const std::string& message)
+{
+    printMessage(message, local_id);
 }
 
 void Interface::printLine(const std::string& msg) { if (console_interface) console_interface->printLine(msg); }

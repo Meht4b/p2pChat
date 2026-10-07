@@ -6,12 +6,10 @@
 #include <memory>
 #include <vector>
 #include <array>
-#include <string>
 
 #include "Message.h"
 #include "SessionCallbackHandler.h"
 
-class Interface;
 
 //whether the session had initiated the connection or accepted the connection
 enum class ConnectionDirection : bool
@@ -46,7 +44,6 @@ private:
 	//stores whether it was outgoing or incoming
 	ConnectionDirection direction;
 
-	Interface& interface;
 
 	//stores whether the current peer is selected or not
 	bool is_selected = false;
@@ -56,7 +53,7 @@ private:
 
 
 public:
-	Session(asio::ip::tcp::socket socket, uint8_t local_id, SessionCallbackHandler* session_callback, ConnectionDirection direction, Interface& interface);
+	Session(asio::ip::tcp::socket socket, uint8_t local_id, SessionCallbackHandler* session_callback, ConnectionDirection direction);
 
 	void start();
 
@@ -92,6 +89,6 @@ private:
 
 	void handleDisconnect();
 
-	void fail(const std::string& reason) noexcept;
+	void fail(const asio::error_code& error) noexcept;
 
 };

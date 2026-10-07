@@ -5,11 +5,12 @@
 #include <asio.hpp>
 #include <thread>
 #include <cstdint>
+#include "PeerManagerCallbackHandler.h"
 
 class PeerManager;
 class ConsoleInterface;
 
-class Interface
+class Interface : public PeerManagerCallbackHandler
 {
 private:
     asio::io_context io_context;
@@ -36,5 +37,17 @@ public:
     bool peerExists(int user);
     void selectPeer(int user);
     void write(const std::string& msg);
+
+    void onPeerManagerStarted(uint16_t port, uint8_t local_id) override;
+    void onPeerManagerError(const asio::error_code& error) override;
+    void onPeerOperationError(const asio::error_code& error) override;
+    void onPeerConnection(bool incoming, const asio::error_code& error) override;
+    void onPeerIdentified(uint8_t peer_id) override;
+    void onDuplicatePeerConnection(uint8_t peer_id, bool new_connection_kept) override;
+    void onPeerDisconnected(uint8_t peer_id) override;
+    void onPeerSessionError(bool identified, uint8_t peer_id,
+        const asio::error_code& error) override;
+    void onPeerMessage(uint8_t peer_id, const std::string& message) override;
+    void onLocalMessageSent(uint8_t local_id, const std::string& message) override;
 
 };

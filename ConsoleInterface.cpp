@@ -5,6 +5,7 @@
 #include <sstream>
 #include <iostream>
 #include <exception>
+#include <utility>
 
 
 using namespace ftxui;
@@ -14,29 +15,36 @@ ConsoleInterface::ConsoleInterface(Interface& interface)
 {
 }
 
-void ConsoleInterface::printLine(const std::string& message){
+void ConsoleInterface::appendOutput(std::string line)
+{
     std::lock_guard<std::mutex> lock(output_mutex);
-    output.push_back(">> " + message);
+    output.push_back(std::move(line));
+}
+
+std::vector<std::string> ConsoleInterface::snapshotOutput() const
+{
+    std::lock_guard<std::mutex> lock(output_mutex);
+    return output;
+}
+
+void ConsoleInterface::printLine(const std::string& message){
+    appendOutput(">> " + message);
 }
 
 void ConsoleInterface::printLineError(const std::string& message) {
-    std::lock_guard<std::mutex> lock(output_mutex);
-    output.push_back("[error] : " + message);
+    appendOutput("[error] : " + message);
 }
 
 void ConsoleInterface::printLineSuccess(const std::string& message) {
-    std::lock_guard<std::mutex> lock(output_mutex);
-    output.push_back("[success] : " + message);
+    appendOutput("[success] : " + message);
 }
 
 void ConsoleInterface::printLineIndent(const std::string& message) {
-    std::lock_guard<std::mutex> lock(output_mutex);
-    output.push_back("  " + message);
+    appendOutput("  " + message);
 }
 
 void ConsoleInterface::printMessage(const std::string& message, int user_id) {
-    std::lock_guard<std::mutex> lock(output_mutex);
-    output.push_back("[" + std::to_string(user_id) + "] : " + message);
+    appendOutput("[" + std::to_string(user_id) + "] : " + message);
 }
 
 void ConsoleInterface::connect(std::istringstream& iss) {
@@ -79,14 +87,13 @@ void ConsoleInterface::start(std::istringstream& iss)
 
 void ConsoleInterface::help()
 {
-	std::lock_guard<std::mutex> lock(output_mutex);
-	output.push_back(">>Available commands:");
-	output.push_back("  start <port> <user_id>");
-	output.push_back("  connect <address> <port>");
-	output.push_back("  showpeers");
-	output.push_back("  help");
-	output.push_back("  clear");
-	output.push_back("  selectpeer <user_id>");
+	appendOutput(">>Available commands:");
+	appendOutput("  start <port> <user_id>");
+	appendOutput("  connect <address> <port>");
+	appendOutput("  showpeers");
+	appendOutput("  help");
+	appendOutput("  clear");
+	appendOutput("  selectpeer <user_id>");
 }
 
 void ConsoleInterface::clear()
@@ -195,12 +202,9 @@ void ConsoleInterface::run()
     auto component = Renderer(input_component, [this, &input_component]
     {
         Elements output_elements;
-
-        {
-            std::lock_guard<std::mutex> lock(output_mutex);
-            for (const auto& line : output)
-                output_elements.push_back(text(line));
-        }
+        const auto lines = snapshotOutput();
+        for (const auto& line : lines)
+            output_elements.push_back(text(line));
 
         return vbox({
 

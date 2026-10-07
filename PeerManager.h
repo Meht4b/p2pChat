@@ -10,6 +10,7 @@
 
 #include "Session.h"
 #include "SessionCallbackHandler.h"
+#include "PeerManagerCallbackHandler.h"
 
 class Interface;
 
@@ -23,13 +24,13 @@ private:
 	asio::ip::tcp::acceptor acceptor;
 	uint8_t peer_id;
 	asio::io_context* io;
-	Interface& interface;
+	PeerManagerCallbackHandler& callbacks;
 	int cur_peer = -1;
 	bool stopped = false;
 	mutable std::recursive_mutex state_mutex;
 	
 public:
-	PeerManager(asio::io_context* io, uint8_t peer_id, int port, Interface& interface);
+	PeerManager(asio::io_context* io, uint8_t peer_id, int port, PeerManagerCallbackHandler& callbacks);
 	~PeerManager() override;
 
 	void onPeerIdentified(uint8_t id, std::shared_ptr<Session> session) override;
@@ -40,16 +41,18 @@ public:
 
 	void write(const std::string& msg);
 
-	void read(const std::string& msg) override;
+	void read(uint8_t peer_id, const std::string& msg) override;
 
 	std::vector<uint8_t> showPeers();
 
 	void onPeerDisconnected(uint8_t id, std::shared_ptr<Session> session) override;
+	void onSessionError(std::optional<uint8_t> peer_id, std::shared_ptr<Session> session,
+		const asio::error_code& error) override;
 	void stop() noexcept;
 	bool isRunning() const noexcept;
 
 private:
 	void accept();
-	void fail(const std::string& reason) noexcept;
+	void fail(const asio::error_code& error) noexcept;
 
 };
