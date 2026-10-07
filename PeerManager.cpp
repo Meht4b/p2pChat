@@ -13,9 +13,11 @@ PeerManager::PeerManager(asio::io_context* context, uint8_t id, int port,
         throw asio::system_error(asio::error::make_error_code(asio::error::invalid_argument));
 
     asio::error_code ec;
-    const auto address = asio::ip::make_address("127.0.0.1", ec);
-    if (ec) throw asio::system_error(ec);
-    const asio::ip::tcp::endpoint endpoint(address, static_cast<unsigned short>(port));
+    // Listen on the machine's network interfaces so other LAN peers can connect.
+    const asio::ip::tcp::endpoint endpoint(
+	asio::ip::address_v4::any(), static_cast<unsigned short>(port));
+
+cast<unsigned short>(port));
 
     acceptor.open(endpoint.protocol(), ec);
     if (ec) throw asio::system_error(ec);
