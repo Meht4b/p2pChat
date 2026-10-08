@@ -32,7 +32,9 @@
     <ClInclude Include="Interface.h" />
     <ClInclude Include="Message.h" />
     <ClInclude Include="PeerManager.h" />
+    <ClInclude Include="PeerManagerCallbackHandler.h" />
     <ClInclude Include="Session.h" />
+    <ClInclude Include="StorageManager.h" />
   </ItemGroup>
   <PropertyGroup Label="Globals">
     <VCProjectVersion>17.0</VCProjectVersion>
