@@ -165,7 +165,7 @@ void PeerManager::selectPeer(int user)
         return;
     }
     std::shared_ptr<Session> old_session;
-    if (cur_peer >= 0) {
+    if (cur_peer > 0) {
         auto old = active_sessions.find(static_cast<uint8_t>(cur_peer));
         if (old != active_sessions.end()) old_session = old->second;
     }
@@ -180,9 +180,9 @@ void PeerManager::selectPeer(int user)
 void PeerManager::deselectPeer()
 {
     std::lock_guard<std::recursive_mutex> lock(state_mutex);
-    if (cur_peer < 0) return;
+    if (cur_peer <= 0) return;
     auto it = active_sessions.find(static_cast<uint8_t>(cur_peer));
-    cur_peer = -1;
+    cur_peer = 0;
     if (it == active_sessions.end()) return;
     auto session = it->second;
     asio::post(*io, [session] { session->deselectPeer(); });
@@ -216,8 +216,16 @@ void PeerManager::read(uint8_t id, const std::string& msg)
     callbacks.onPeerMessage(id, msg);
 }
 
+uint8_t PeerManager::getSelectedPeer() {
+	std::lock_guard<std::recursive_mutex> lock(state_mutex); return cur_peer;
+}
+
 void PeerManager::onPeerDisconnected(uint8_t id, std::shared_ptr<Session> session)
 {
+    if (id == cur_peer) {
+        std::lock_guard<std::recursive_mutex> lock(state_mutex);
+        cur_peer = 0;
+    }
     std::lock_guard<std::recursive_mutex> lock(state_mutex);
     auto it = active_sessions.find(id);
     if (it == active_sessions.end() || it->second != session) return;

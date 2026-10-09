@@ -1,6 +1,7 @@
 #include "Interface.h"
 #include "ConsoleInterface.h"
 #include "PeerManager.h"
+#include "StorageManager.h"
 
 #include <algorithm>
 #include <exception>
@@ -31,9 +32,42 @@ void Interface::shutdown() noexcept
 
 void Interface::setConsole(ConsoleInterface* cs) { console_interface = cs; }
 
-void Interface::start(int port, uint8_t user)
+void Interface::start(int port, uint8_t user) {
+    try {
+        startPeerManager(port, user);
+    } catch (const std::exception& e) {
+        printLineError(std::string("Failed to start peer manager: ") + e.what());
+        peer_manager->stop();
+        peer_manager.reset();
+        return;
+    } catch (...) {
+        printLineError("Failed to start peer manager due to an unknown error");
+        peer_manager->stop();
+        peer_manager.reset();
+        return;
+    }
+
+    try {
+        startStorageManager("storage.db", 100);
+    } catch (const std::exception& e) {
+        printLineError(std::string("Failed to start storage manager: ") + e.what());
+        peer_manager->stop();
+        peer_manager.reset(); 
+		storage_manager.reset();
+        return;
+	}
+	catch (...) {
+        printLineError("Failed to start storage manager due to an unknown error");     
+        peer_manager->stop();
+        peer_manager.reset(); 
+		storage_manager.reset();
+        return; 
+	}
+}
+
+void Interface::startPeerManager(int port, uint8_t user)
 {
-    if (peer_manager && peer_manager->isRunning()) {
+	if (peer_manager && peer_manager->isRunning()) {
         printLineError("PeerManager is already running");
         return;
     }
@@ -73,6 +107,19 @@ void Interface::start(int port, uint8_t user)
     }
 }
 
+void Interface::startStorageManager(const std::string& storage_path, std::size_t max_queue)
+{
+    try {
+		auto storage = std::make_unique<StorageManager>(storage_path, max_queue);
+		storage_manager = std::move(storage);
+        printLineSuccess("Storage manager started with path: " + storage_path + " and max queue size: " + std::to_string(max_queue));
+    } catch (const std::exception& e) {
+        printLineError(std::string("Failed to start storage manager: ") + e.what());
+    } catch (...) {
+        printLineError("Failed to start storage manager due to an unknown error");
+    }
+}
+
 void Interface::connect(const std::string& address, int port)
 {
     if (!peer_manager || !peer_manager->isRunning()) { printLineError("Peer manager is not running; use /start <port> <user_id>"); return; }
@@ -98,6 +145,15 @@ void Interface::selectPeer(int user)
 {
     if (!peer_manager || !peer_manager->isRunning()) { printLineError("Peer manager is not running"); return; }
     peer_manager->selectPeer(user);
+	std::vector<StoredMessage> messages = storage_manager->getMessages(static_cast<uint8_t>(user));
+
+    for (auto msg: messages) {
+        if (msg.outgoing) {
+            printSentMessage(msg.content);
+        } else {
+            printMessage(msg.content, msg.peer_id);
+        }
+	}
 }
 
 void Interface::deselectPeer()
@@ -112,6 +168,7 @@ void Interface::write(const std::string& msg)
 {
     if (!peer_manager || !peer_manager->isRunning()) { printLineError("Peer manager is not running"); return; }
     peer_manager->write(msg);
+	storage_manager->saveMessage(peer_manager->getSelectedPeer(), true, msg);
 }
 
 void Interface::onPeerManagerStarted(uint16_t port, uint8_t local_id)
@@ -170,6 +227,7 @@ void Interface::onPeerSessionError(bool identified, uint8_t peer_id,
 void Interface::onPeerMessage(uint8_t peer_id, const std::string& message)
 {
     printMessage(message, peer_id);
+	storage_manager->saveMessage(peer_id, false, message);
 }
 
 void Interface::onLocalMessageSent(uint8_t /*local_id*/, const std::string& message)

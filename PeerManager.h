@@ -25,7 +25,7 @@ private:
 	uint8_t peer_id;
 	asio::io_context* io;
 	PeerManagerCallbackHandler& callbacks;
-	int cur_peer = -1;
+	uint8_t cur_peer = 0;		
 	bool stopped = false;
 	mutable std::recursive_mutex state_mutex;
 	
@@ -40,6 +40,8 @@ public:
 	void selectPeer(int user);
 
 	void deselectPeer();
+
+	uint8_t getSelectedPeer();
 
 	void write(const std::string& msg);
 
