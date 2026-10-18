@@ -71,8 +71,8 @@ void Interface::initialize(const std::string& storage_path)
 {
     storage_manager = std::make_unique<StorageManager>(storage_path, 100);
 
-    // The TLS signing key is persistent and protected by Windows DPAPI. The
-    // public-key fingerprint is the stable peer ID shared in the app handshake.
+    // The persistent signing key is stored portably; its public-key fingerprint
+    // is the stable peer ID shared in the app handshake.
     crypto_identity = CryptoIdentity::loadOrCreate(*storage_manager);
     local_id = crypto_identity.peerId();
 

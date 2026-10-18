@@ -261,8 +261,8 @@ public:
 uint16_t freePort()
 {
     asio::io_context io;
-    asio::ip::tcp::acceptor acceptor(io, asio::ip::tcp::endpoint(asio::ip::address_v4::loopback(), 0));
-    return acceptor.local_endpoint().port();
+    asio::ip::udp::socket socket(io, asio::ip::udp::endpoint(asio::ip::address_v4::loopback(), 0));
+    return socket.local_endpoint().port();
 }
 
 struct Node
@@ -291,7 +291,7 @@ struct Node
 
 void testNetwork()
 {
-    section("network: mutual TLS 1.3, identity binding, encrypted chat flow");
+    section("network: QUIC over UDP, TLS 1.3 identity binding, reliable encrypted chat flow");
     Node alice("alice"), bob("bob");
 
     alice.manager->connect("127.0.0.1", bob.port);
@@ -317,22 +317,31 @@ void testNetwork()
     CHECK(alice.recorder.waitFor([&] { return !alice.recorder.sent.empty(); }));
     CHECK(alice.recorder.sent[0].first == bob.self.id);      // reports WHO it was sent to
 
+    const std::string large_message(16 * 1024, 'z');
+    alice.manager->write(large_message);
+    CHECK(bob.recorder.waitFor([&] { return bob.recorder.received.size() == 2; }));
+    CHECK(bob.recorder.received[1].second == large_message); // spans many UDP packets
+    CHECK(alice.recorder.waitFor([&] { return alice.recorder.sent.size() == 2; }));
+
+    bob.manager->write("reply from bob");
+    CHECK(alice.recorder.waitFor([&] { return alice.recorder.received.size() == 1; }));
+    CHECK(alice.recorder.received[0].second == "reply from bob");
+
     // leaving a chat buffers messages until the peer is selected again
     bob.manager->deselectPeer();
     CHECK(!bob.manager->getSelectedPeer().has_value());
     alice.manager->write("while you were away");
-    CHECK(alice.recorder.waitFor([&] { return alice.recorder.sent.size() == 2; }));
+    CHECK(alice.recorder.waitFor([&] { return alice.recorder.sent.size() == 3; }));
     std::this_thread::sleep_for(std::chrono::milliseconds(150));
-    CHECK(bob.recorder.received.size() == 1);
+    CHECK(bob.recorder.received.size() == 2);
     bob.manager->selectPeer(alice.self.id);
-    CHECK(bob.recorder.waitFor([&] { return bob.recorder.received.size() == 2; }));
-    CHECK(bob.recorder.received[1].second == "while you were away");
+    CHECK(bob.recorder.waitFor([&] { return bob.recorder.received.size() == 3; }));
+    CHECK(bob.recorder.received[2].second == "while you were away");
 }
 
 void testCryptoIdentityPersistence()
 {
-#ifdef _WIN32
-    section("crypto identity: protected persistence and stable peer id");
+    section("crypto identity: portable persistence and stable peer id");
     const std::string path = tempDb("crypto_identity");
     PeerId first;
     {
@@ -340,6 +349,7 @@ void testCryptoIdentityPersistence()
         const CryptoIdentity identity = CryptoIdentity::loadOrCreate(storage);
         first = identity.peerId();
         CHECK(!first.isZero());
+        CHECK(storage.getSetting("crypto.identity.v2").has_value());
     }
     {
         StorageManager storage(path, 10);
@@ -347,44 +357,32 @@ void testCryptoIdentityPersistence()
         CHECK(identity.peerId() == first);
     }
     std::filesystem::remove(path);
-#endif
 }
 
-void sendRaw(uint16_t port, const std::vector<char>& bytes, bool expect_close)
+void sendRaw(uint16_t port, const std::vector<char>& bytes)
 {
     asio::io_context io;
-    asio::ip::tcp::socket socket(io);
-    socket.connect({ asio::ip::address_v4::loopback(), port });
-    asio::write(socket, asio::buffer(bytes));
-    if (expect_close) {
-        char buffer[64];
-        asio::error_code ec;
-        // our own handshake arrives first, then the connection is closed
-        while (!ec) socket.read_some(asio::buffer(buffer), ec);
-    }
+    asio::ip::udp::socket socket(io, asio::ip::udp::v4());
+    socket.send_to(asio::buffer(bytes), { asio::ip::address_v4::loopback(), port });
 }
 
 void testNetworkRejectsBadHandshakes()
 {
-    section("network: malformed handshakes are rejected");
+    section("network: non-QUIC UDP datagrams are ignored");
     Node node("server");
 
-    // old format: a single id byte
-    sendRaw(node.port, serialize({ MessageType::Handshake, { 7 } }), true);
-    CHECK(node.recorder.waitFor([&] { return !node.recorder.session_errors.empty(); }));
-    CHECK(!node.recorder.session_errors[0].first);
+    sendRaw(node.port, { 7 });
+    sendRaw(node.port, serialize({ MessageType::Handshake, { 7 } }));
+    std::this_thread::sleep_for(std::chrono::milliseconds(150));
+    CHECK(node.manager->isRunning());
+    CHECK(node.recorder.session_errors.empty());
     CHECK(node.recorder.identified.empty());
-
-    // right size, but it is us (self-connection is refused)
-    PeerInfo clone = node.self;
-    sendRaw(node.port, serialize(makeHandshake(clone)), true);
-    CHECK(node.recorder.waitFor([&] { return node.recorder.session_errors.size() >= 2; }));
     CHECK(node.manager->showPeers().empty());
 }
 
 void testNetworkRejectsUnboundPeerId()
 {
-    section("network: rejects app identity not bound to TLS key");
+    section("network: rejects app identity not bound to QUIC TLS key");
     Node server("server");
     Node forged("forged", true);
     forged.manager->connect("127.0.0.1", server.port);

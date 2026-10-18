@@ -10,7 +10,9 @@ option(P2P_BUILD_TESTS "Build the tests" ON)
 include(FetchContent)
 find_package(Threads REQUIRED)
 find_package(SQLite3 REQUIRED)
-find_package(OpenSSL 1.1.1 REQUIRED COMPONENTS SSL Crypto)
+# ngtcp2's OpenSSL QUIC TLS backend requires OpenSSL's QUIC API (3.5+).
+find_package(OpenSSL 3.5 REQUIRED COMPONENTS SSL Crypto)
+find_package(ngtcp2 CONFIG REQUIRED)
 
 # standalone asio
 find_path(ASIO_INCLUDE_DIR asio.hpp)
@@ -28,7 +30,8 @@ add_library(p2pcore STATIC
   PeerId.cpp TextSanitizer.cpp Message.cpp CryptoIdentity.cpp Session.cpp PeerManager.cpp StorageManager.cpp)
 target_include_directories(p2pcore PUBLIC ${CMAKE_CURRENT_SOURCE_DIR} ${ASIO_INCLUDE_DIR})
 target_compile_definitions(p2pcore PUBLIC ASIO_STANDALONE)
-target_link_libraries(p2pcore PUBLIC Threads::Threads SQLite::SQLite3 OpenSSL::SSL OpenSSL::Crypto)
+target_link_libraries(p2pcore PUBLIC Threads::Threads SQLite3::SQLite3 OpenSSL::SSL OpenSSL::Crypto
+  ngtcp2::ngtcp2 ngtcp2::ngtcp2_crypto_ossl)
 if(WIN32)
   target_compile_definitions(p2pcore PUBLIC _WIN32_WINNT=0x0A00)
   target_link_libraries(p2pcore PUBLIC ws2_32 mswsock Crypt32)

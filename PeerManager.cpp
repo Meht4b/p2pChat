@@ -2,46 +2,65 @@
 
 #include <stdexcept>
 #include <utility>
-#include <mutex>
 
-PeerManager::PeerManager(asio::io_context* context, PeerInfo local_info, const CryptoIdentity& identity, int port,
-    PeerManagerCallbackHandler& event_handler)
-    : acceptor(*context), tls_context(identity.makeTlsContext()), local(std::move(local_info)), io(context), callbacks(event_handler)
+namespace {
+
+asio::io_context& requireIoContext(asio::io_context* context)
 {
     if (!context) throw std::invalid_argument("PeerManager requires an io_context");
+    return *context;
+}
+
+struct QuicCryptoRuntime {
+    QuicCryptoRuntime()
+    {
+        if (ngtcp2_crypto_ossl_init() != 0)
+            throw std::runtime_error("Initializing ngtcp2 OpenSSL backend failed");
+    }
+    ~QuicCryptoRuntime() { ngtcp2_crypto_ossl_free(); }
+};
+
+void ensureQuicCryptoRuntime()
+{
+    static QuicCryptoRuntime runtime;
+    (void)runtime;
+}
+
+} // namespace
+
+PeerManager::PeerManager(asio::io_context* context, PeerInfo local_info,
+    const CryptoIdentity& identity, int port, PeerManagerCallbackHandler& event_handler)
+    : socket(requireIoContext(context)), tls_context(identity.makeTlsContext()), local(std::move(local_info)),
+      io(context), callbacks(event_handler)
+{
     if (port < 1 || port > 65535)
         throw asio::system_error(asio::error::make_error_code(asio::error::invalid_argument));
 
     asio::error_code ec;
-    // Listen on the machine's network interfaces so other LAN peers can connect.
-    const asio::ip::tcp::endpoint endpoint(
-	asio::ip::address_v4::any(), static_cast<unsigned short>(port));
-
-
-    acceptor.open(endpoint.protocol(), ec);
+    const UdpEndpoint endpoint(asio::ip::udp::v4(), static_cast<unsigned short>(port));
+    socket.open(endpoint.protocol(), ec);
     if (ec) throw asio::system_error(ec);
 #ifndef _WIN32
-    // The app listens automatically on every launch, so a quick restart must not fail because
-    // the previous run's connections are still in TIME_WAIT. (Not done on Windows, where
-    // SO_REUSEADDR would let another process share the port.)
-    acceptor.set_option(asio::socket_base::reuse_address(true), ec);
+    socket.set_option(asio::socket_base::reuse_address(true), ec);
     if (ec) throw asio::system_error(ec);
 #endif
-    acceptor.bind(endpoint, ec);
-    if (ec) throw asio::system_error(ec);
-    acceptor.listen(asio::socket_base::max_listen_connections, ec);
+    socket.bind(endpoint, ec);
     if (ec) throw asio::system_error(ec);
 
+    ensureQuicCryptoRuntime();
     callbacks.onPeerManagerStarted(static_cast<uint16_t>(port), local);
-    accept();
+    receive();
 }
 
-PeerManager::~PeerManager() { stop(); }
+PeerManager::~PeerManager()
+{
+    stop();
+}
 
 bool PeerManager::isRunning() const noexcept
 {
     std::lock_guard<std::recursive_mutex> lock(state_mutex);
-    return !stopped && acceptor.is_open();
+    return !stopped && socket.is_open();
 }
 
 void PeerManager::fail(const asio::error_code& error) noexcept
@@ -58,21 +77,123 @@ void PeerManager::stop() noexcept
     if (stopped) return;
     stopped = true;
     asio::error_code ignored;
-    acceptor.cancel(ignored);
-    acceptor.close(ignored);
+    socket.cancel(ignored);
+    socket.close(ignored);
     for (auto& entry : active_sessions) entry.second->close();
+    for (auto& entry : pending_sessions) entry.second->close();
     active_sessions.clear();
+    pending_sessions.clear();
+    cid_sessions.clear();
+    send_queue.clear();
     cur_peer.reset();
+}
+
+void PeerManager::receive()
+{
+    if (!isRunning()) return;
+    socket.async_receive_from(asio::buffer(receive_buffer), receive_endpoint,
+        [this](const asio::error_code& ec, std::size_t bytes) {
+            if (ec) {
+                if (ec != asio::error::operation_aborted) fail(ec);
+                return;
+            }
+            const UdpEndpoint source = receive_endpoint;
+            const std::vector<uint8_t> received(receive_buffer.begin(),
+                receive_buffer.begin() + static_cast<std::ptrdiff_t>(bytes));
+            receive();
+            std::lock_guard<std::recursive_mutex> lock(state_mutex);
+            if (stopped || bytes == 0) return;
+
+            const uint8_t* packet = received.data();
+            ngtcp2_version_cid version_cid{};
+            const int decode_rv = ngtcp2_pkt_decode_version_cid(&version_cid,
+                packet, bytes, Session::kConnectionIdLength);
+            if (decode_rv == 0 && version_cid.dcid && version_cid.dcidlen > 0) {
+                const std::string key(reinterpret_cast<const char*>(version_cid.dcid),
+                    version_cid.dcidlen);
+                const auto it = cid_sessions.find(key);
+                if (it != cid_sessions.end()) {
+                    it->second->onDatagram(packet, received.size(), source);
+                    return;
+                }
+            }
+
+            ngtcp2_pkt_hd initial_header{};
+            if (ngtcp2_accept(&initial_header, packet, bytes) != 0) return;
+            try {
+                auto session = std::make_shared<Session>(socket, source,
+                    tls_context, local, this, ConnectionDirection::Incoming,
+                    [this](const UdpEndpoint& target, std::vector<uint8_t> data) {
+                        sendDatagram(target, std::move(data));
+                    },
+                    [this](const std::string& cid, std::shared_ptr<Session> owner) {
+                        registerCid(cid, std::move(owner));
+                    });
+                pending_sessions.emplace(session.get(), session);
+                callbacks.onPeerConnection(true, {});
+                session->startServer(initial_header, packet, received.size());
+            } catch (...) {
+                callbacks.onPeerSessionError(true, PeerId{},
+                    asio::error::make_error_code(asio::error::fault));
+            }
+        });
+}
+
+void PeerManager::sendDatagram(const UdpEndpoint& endpoint, std::vector<uint8_t> packet)
+{
+    std::lock_guard<std::recursive_mutex> lock(state_mutex);
+    if (stopped || !socket.is_open() || packet.empty()) return;
+    send_queue.push_back({endpoint, std::move(packet)});
+    flushDatagrams();
+}
+
+void PeerManager::flushDatagrams()
+{
+    if (stopped || sending_datagram || send_queue.empty()) return;
+    sending_datagram = true;
+    auto& datagram = send_queue.front();
+    socket.async_send_to(asio::buffer(datagram.bytes), datagram.endpoint,
+        [this](const asio::error_code& ec, std::size_t) {
+            std::lock_guard<std::recursive_mutex> lock(state_mutex);
+            sending_datagram = false;
+            if (!send_queue.empty()) send_queue.pop_front();
+            if (ec && ec != asio::error::operation_aborted) {
+                fail(ec);
+                return;
+            }
+            flushDatagrams();
+        });
+}
+
+void PeerManager::registerCid(const std::string& cid, std::shared_ptr<Session> session)
+{
+    std::lock_guard<std::recursive_mutex> lock(state_mutex);
+    if (stopped) throw std::runtime_error("Peer manager is stopped");
+    const auto [it, inserted] = cid_sessions.emplace(cid, session);
+    if (!inserted && it->second != session)
+        throw std::runtime_error("QUIC connection ID collision");
+    pending_sessions.emplace(session.get(), std::move(session));
+}
+
+void PeerManager::removeRoutes(Session* session)
+{
+    pending_sessions.erase(session);
+    for (auto it = cid_sessions.begin(); it != cid_sessions.end();) {
+        if (it->second.get() == session) it = cid_sessions.erase(it);
+        else ++it;
+    }
 }
 
 void PeerManager::onPeerIdentified(const PeerInfo& peer, std::shared_ptr<Session> session)
 {
     const PeerId& id = peer.id;
     std::lock_guard<std::recursive_mutex> lock(state_mutex);
+    pending_sessions.erase(session.get());
     if (stopped || id == local.id) {
         if (id == local.id)
             callbacks.onPeerSessionError(true, id, asio::error::make_error_code(asio::error::fault));
         session->close();
+        removeRoutes(session.get());
         return;
     }
     auto it = active_sessions.find(id);
@@ -89,34 +210,13 @@ void PeerManager::onPeerIdentified(const PeerInfo& peer, std::shared_ptr<Session
     if (keepNew) {
         auto old = std::move(it->second);
         it->second = std::move(session);
+        removeRoutes(old.get());
         old->close();
     } else {
+        removeRoutes(session.get());
         session->close();
     }
     callbacks.onDuplicatePeerConnection(id, keepNew);
-}
-
-void PeerManager::accept()
-{
-    if (!isRunning()) return;
-    acceptor.async_accept([this](const asio::error_code& ec, asio::ip::tcp::socket socket) {
-        std::lock_guard<std::recursive_mutex> lock(state_mutex);
-        if (stopped) return;
-        if (ec) {
-            if (ec != asio::error::operation_aborted) fail(ec);
-            return;
-        }
-        callbacks.onPeerConnection(true, ec);
-        try {
-            asio::ssl::stream<asio::ip::tcp::socket> tls(std::move(socket), *tls_context);
-            auto session = std::make_shared<Session>(std::move(tls), local, this,
-                ConnectionDirection::Incoming);
-            session->initiateHandshake();
-            session->start();
-            accept();
-        } catch (const std::exception&) { fail(asio::error::make_error_code(asio::error::fault)); }
-        catch (...) { fail(asio::error::make_error_code(asio::error::fault)); }
-    });
 }
 
 void PeerManager::connect(const std::string& address, unsigned short port)
@@ -126,40 +226,30 @@ void PeerManager::connect(const std::string& address, unsigned short port)
         callbacks.onPeerConnection(false, asio::error::make_error_code(asio::error::not_connected));
         return;
     }
+    asio::error_code ec;
+    auto ip = asio::ip::make_address(address, ec);
+    if (ec) { callbacks.onPeerConnection(false, ec); return; }
+    if (ip.is_v4() != socket.local_endpoint().address().is_v4()) {
+        callbacks.onPeerConnection(false, asio::error::make_error_code(asio::error::address_family_not_supported));
+        return;
+    }
+    const UdpEndpoint endpoint(ip, port);
     try {
-        asio::error_code ec;
-        auto ip = asio::ip::make_address(address, ec);
-        if (ec) { callbacks.onPeerConnection(false, ec); return; }
-        auto socket = std::make_shared<asio::ip::tcp::socket>(*io);
-        const asio::ip::tcp::endpoint endpoint(ip, port);
-        socket->async_connect(endpoint, [this, socket](const asio::error_code& error) {
-            std::lock_guard<std::recursive_mutex> callback_lock(state_mutex);
-            if (stopped) return;
-            callbacks.onPeerConnection(false, error);
-            if (error) return;
-            try {
-                asio::ssl::stream<asio::ip::tcp::socket> tls(std::move(*socket), *tls_context);
-                auto session = std::make_shared<Session>(std::move(tls), local, this,
-                    ConnectionDirection::Outgoing);
-                session->initiateHandshake();
-                session->start();
-            } catch (const std::exception&) {
-                callbacks.onPeerSessionError(false, PeerId{}, asio::error::make_error_code(asio::error::fault));
-            } catch (...) {
-                callbacks.onPeerSessionError(false, PeerId{}, asio::error::make_error_code(asio::error::fault));
-            }
-        });
-    } catch (const asio::system_error& e) { callbacks.onPeerConnection(false, e.code()); }
-    catch (...) { callbacks.onPeerConnection(false, asio::error::make_error_code(asio::error::fault)); }
-}
-
-std::vector<PeerId> PeerManager::showPeers()
-{
-    std::lock_guard<std::recursive_mutex> lock(state_mutex);
-    std::vector<PeerId> peers;
-    peers.reserve(active_sessions.size());
-    for (const auto& [id, session] : active_sessions) peers.push_back(id);
-    return peers;
+        auto session = std::make_shared<Session>(socket, endpoint, tls_context, local,
+            this, ConnectionDirection::Outgoing,
+            [this](const UdpEndpoint& target, std::vector<uint8_t> data) {
+                sendDatagram(target, std::move(data));
+            },
+            [this](const std::string& cid, std::shared_ptr<Session> owner) {
+                registerCid(cid, std::move(owner));
+            });
+        pending_sessions.emplace(session.get(), session);
+        session->initiateHandshake();
+        session->start();
+        callbacks.onPeerConnection(false, {});
+    } catch (...) {
+        callbacks.onPeerConnection(false, asio::error::make_error_code(asio::error::fault));
+    }
 }
 
 void PeerManager::selectPeer(const PeerId& peer)
@@ -223,8 +313,19 @@ void PeerManager::read(const PeerId& id, const std::string& msg)
     callbacks.onPeerMessage(id, msg);
 }
 
-std::optional<PeerId> PeerManager::getSelectedPeer() {
-	std::lock_guard<std::recursive_mutex> lock(state_mutex); return cur_peer;
+std::optional<PeerId> PeerManager::getSelectedPeer()
+{
+    std::lock_guard<std::recursive_mutex> lock(state_mutex);
+    return cur_peer;
+}
+
+std::vector<PeerId> PeerManager::showPeers()
+{
+    std::lock_guard<std::recursive_mutex> lock(state_mutex);
+    std::vector<PeerId> peers;
+    peers.reserve(active_sessions.size());
+    for (const auto& [id, session] : active_sessions) { (void)session; peers.push_back(id); }
+    return peers;
 }
 
 void PeerManager::onPeerDisconnected(const PeerId& id, std::shared_ptr<Session> session)
@@ -234,6 +335,7 @@ void PeerManager::onPeerDisconnected(const PeerId& id, std::shared_ptr<Session> 
     if (it == active_sessions.end() || it->second != session) return;
     active_sessions.erase(it);
     if (cur_peer == id) cur_peer.reset();
+    removeRoutes(session.get());
     callbacks.onPeerDisconnected(id);
 }
 
@@ -241,6 +343,7 @@ void PeerManager::onSessionError(std::optional<PeerId> id, std::shared_ptr<Sessi
     const asio::error_code& error)
 {
     std::lock_guard<std::recursive_mutex> lock(state_mutex);
+    removeRoutes(session.get());
     if (id) {
         auto it = active_sessions.find(*id);
         if (it != active_sessions.end() && it->second == session) {

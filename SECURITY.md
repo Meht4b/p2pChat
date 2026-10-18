@@ -1,37 +1,69 @@
-# Transport security
+# Transport security and identity
 
-Peer connections use mutual TLS 1.3 through OpenSSL. The TLS connection protects
-all existing length-prefixed frames, including the peer ID, username, and chat
-messages. The framing and chat APIs stay independent of the transport; a relay
-can later forward the TLS byte stream without terminating or reading it.
+## Transport
 
-Each installation creates an Ed25519 signing key and a self-signed X.509
-certificate. The stable 256-bit peer ID is SHA-256 of the key's DER
-SubjectPublicKeyInfo. TLS proves possession of the signing key, and the
-application handshake rejects any peer ID that does not match the TLS
-certificate key. Thus a peer cannot claim another ID by changing the plaintext
-application handshake. TLS 1.3 negotiates ephemeral key agreement and
-authenticated encryption using OpenSSL's maintained implementation.
+Peer connections use IETF QUIC over UDP through ngtcp2 and OpenSSL's TLS 1.3
+implementation. QUIC provides authenticated encryption, retransmission, and
+ordered reliable streams. The chat still serializes each message as the existing
+four-byte length, message type, and body; QUIC stream boundaries do not replace
+or alter that application framing. Each peer opens one bidirectional QUIC
+stream, so chat messages in each direction are delivered in order.
+Sessions send a QUIC keep-alive PING after 10 seconds without traffic. This
+prevents the configured 30-second QUIC idle timeout from closing an otherwise
+quiet chat and helps maintain UDP/NAT state. It is a liveness aid, not a promise
+that every router or network will retain a mapping indefinitely; a peer that
+is offline or unreachable still disconnects after transport failure detection.
 
-On Windows, the private key is protected with DPAPI for the current Windows
-user before it is stored in the existing SQLite settings database. The
-certificate is public and stored alongside it. Losing the Windows account's
-DPAPI material means the identity cannot be recovered; restoring the database
-on another Windows account will require a new identity. The previous random
-peer ID setting is retained as unused legacy data. The new public-key-derived
-ID differs from that old ID, so peers will see this installation as a new
-identity after upgrading.
+`PeerManager` owns one bound UDP socket. It routes incoming QUIC datagrams to
+sessions by the destination connection ID. A `Session` owns only the QUIC and
+TLS state; it receives datagrams and emits datagrams through callbacks. This
+keeps message framing and session behavior independent from how UDP packets
+reach the socket, which provides a place to add ICE-selected paths or relay
+encapsulation later.
+TLS negotiates the application protocol identifier `p2pchat/1` so a client
+cannot accidentally establish a chat session against a different QUIC service.
 
-This encrypts traffic between the two chat endpoints, including through a
-future transparent TCP relay. It does not add offline relay storage, message
-queues, a double ratchet, post-compromise recovery, group encryption, or
-application-level message signatures. A malicious relay can still observe
-network addresses, timing, connection sizes, and traffic volume, and can drop
-or delay traffic. TLS provides forward secrecy for captured traffic after a
-later compromise of the long-term signing key, but does not protect messages
-captured from a live compromised endpoint. The current SQLite chat history is
-also stored as plaintext on the local device. Verify peer IDs through a separate
-trusted channel when the first contact itself is security-sensitive. A relay
-that stores messages for delivery after a peer disconnects will need an
-application-level encrypted message envelope; this stream encryption alone
-does not support offline store-and-forward.
+The app currently supports direct connections to a numeric IP address. It does
+not yet implement STUN, ICE candidate exchange, hole punching, a relay, or
+address discovery. Both peers still need a reachable UDP path, such as the same
+LAN or manually configured router forwarding. The shared socket is not yet
+demultiplexing STUN or relay packets.
+
+The ngtcp2 core implements QUIC. This project uses ngtcp2's OpenSSL TLS backend,
+which is marked experimental by ngtcp2 and requires OpenSSL 3.5 or newer for its
+QUIC TLS APIs. The CMake and vcpkg dependencies enforce that minimum. Review
+ngtcp2 and OpenSSL release notes before shipping a production build.
+
+## Peer identity
+
+Each installation creates an Ed25519 key and a self-signed X.509 certificate.
+The stable 256-bit peer ID is SHA-256 of the key's DER
+SubjectPublicKeyInfo. TLS proves possession of the private key. After the QUIC
+TLS handshake, the application handshake supplies the peer ID and username;
+the session rejects a claimed ID that does not match the certificate key.
+Certificates are self-signed and are not checked against a public certificate
+authority, so the key-derived peer ID is the identity. Verify a new peer ID
+through another trusted channel when first-contact identity matters.
+
+The private key and public certificate are stored in the existing SQLite
+settings database in a portable format. The private key is not encrypted at
+rest; anyone who can read the database can impersonate this installation. A
+Windows-only DPAPI identity from the previous format is migrated to the
+portable format when opened on Windows. Linux and macOS cannot decrypt a
+database that contains only that old DPAPI value; those platforms create a new
+identity until the database is migrated on Windows. Existing random peer ID
+settings remain unused legacy data. Since the current peer ID is derived from
+the public key, peers may see an installation as a new identity after an
+identity-format upgrade.
+
+## Limits
+
+QUIC protects traffic between the two endpoints, including through a future
+transparent UDP relay. A relay cannot read or change authenticated stream
+contents, but it can observe endpoint addresses, connection IDs, timing, packet
+sizes, and traffic volume, and can drop or delay packets. This transport does
+not provide offline store-and-forward, message signatures, a double ratchet,
+post-compromise recovery, group encryption, or anonymity. The SQLite chat
+history is stored as plaintext on the local device. A future relay that stores
+messages beyond a live QUIC connection will need a separate encrypted message
+envelope and delivery protocol.

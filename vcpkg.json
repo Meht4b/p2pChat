@@ -3,6 +3,10 @@
   "version-string": "0.1.0",
   "dependencies": [
     "ftxui",
+    {
+      "name": "ngtcp2",
+      "features": ["openssl"]
+    },
     "openssl",
     "sqlite3"
   ]

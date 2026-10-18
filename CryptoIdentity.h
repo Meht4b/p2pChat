@@ -24,6 +24,7 @@ public:
 
     const PeerId& peerId() const noexcept { return peer_id_; }
     std::shared_ptr<asio::ssl::context> makeTlsContext() const;
+    static void configureQuicClientAlpn(SSL* ssl);
     static PeerId peerIdFromTlsPeer(SSL* ssl);
 
 private:

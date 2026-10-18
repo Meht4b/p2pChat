@@ -19,10 +19,32 @@
 #include <windows.h>
 #include <dpapi.h>
 #include <wincrypt.h>
+// wincrypt.h defines X509_NAME as a certificate OID; OpenSSL uses the same
+// token for its X509_NAME type below.
+#ifdef X509_NAME
+#undef X509_NAME
+#endif
 #pragma comment(lib, "Crypt32.lib")
 #endif
 
 namespace {
+
+constexpr unsigned char kP2pChatAlpn[] = {
+    9, 'p', '2', 'p', 'c', 'h', 'a', 't', '/', '1'
+};
+
+int selectP2pChatAlpn(SSL*, const unsigned char** selected,
+    unsigned char* selected_length, const unsigned char* offered,
+    unsigned int offered_length, void*)
+{
+    unsigned char* protocol = nullptr;
+    const int result = SSL_select_next_proto(&protocol, selected_length,
+        kP2pChatAlpn, static_cast<unsigned int>(sizeof(kP2pChatAlpn)),
+        offered, offered_length);
+    if (result != OPENSSL_NPN_NEGOTIATED) return SSL_TLSEXT_ERR_ALERT_FATAL;
+    *selected = protocol;
+    return SSL_TLSEXT_ERR_OK;
+}
 
 [[noreturn]] void cryptoError(const char* operation)
 {
@@ -60,27 +82,6 @@ std::vector<unsigned char> base64Decode(const std::string& text)
     return result;
 }
 
-std::vector<unsigned char> protectPrivateKey(const std::vector<unsigned char>& plain)
-{
-#ifdef _WIN32
-    DATA_BLOB input{ static_cast<DWORD>(plain.size()), const_cast<BYTE*>(plain.data()) };
-    static constexpr char entropyText[] = "p2pChat identity v1";
-    DATA_BLOB entropy{ static_cast<DWORD>(sizeof(entropyText) - 1),
-                       reinterpret_cast<BYTE*>(const_cast<char*>(entropyText)) };
-    DATA_BLOB output{};
-    if (!CryptProtectData(&input, L"p2pChat identity", &entropy, nullptr, nullptr,
-                          CRYPTPROTECT_UI_FORBIDDEN, &output))
-        throw std::runtime_error("Windows could not protect the local identity key");
-    std::vector<unsigned char> protectedBytes(output.pbData, output.pbData + output.cbData);
-    SecureZeroMemory(output.pbData, output.cbData);
-    LocalFree(output.pbData);
-    return protectedBytes;
-#else
-    (void)plain;
-    throw std::runtime_error("Persistent cryptographic identities currently require Windows DPAPI");
-#endif
-}
-
 std::vector<unsigned char> unprotectPrivateKey(const std::vector<unsigned char>& protectedBytes)
 {
 #ifdef _WIN32
@@ -99,7 +100,7 @@ std::vector<unsigned char> unprotectPrivateKey(const std::vector<unsigned char>&
     return plain;
 #else
     (void)protectedBytes;
-    throw std::runtime_error("Persistent cryptographic identities currently require Windows DPAPI");
+    throw std::runtime_error("This legacy identity was protected by Windows DPAPI and cannot be migrated here");
 #endif
 }
 
@@ -111,6 +112,11 @@ std::string certificateToPem(X509* certificate)
     const long size = BIO_get_mem_data(bio.get(), &data);
     if (size <= 0 || !data) cryptoError("Reading identity certificate");
     return std::string(data, static_cast<std::size_t>(size));
+}
+
+std::string identityRecord(const std::vector<unsigned char>& privateKeyDer, X509* certificate)
+{
+    return base64Encode(privateKeyDer.data(), privateKeyDer.size()) + "\n" + certificateToPem(certificate);
 }
 
 } // namespace
@@ -157,24 +163,46 @@ CryptoIdentity CryptoIdentity::generate()
 
 CryptoIdentity CryptoIdentity::loadOrCreate(StorageManager& storage)
 {
-    constexpr const char* identitySetting = "crypto.identity.v1";
-    if (const auto record = storage.getSetting(identitySetting)) {
-        const std::size_t separator = record->find('\n');
-        if (separator == std::string::npos || separator == 0 || separator + 1 == record->size())
+    constexpr const char* portableSetting = "crypto.identity.v2";
+    auto loadRecord = [&](const std::string& record, bool legacyProtected) {
+        const std::size_t separator = record.find('\n');
+        if (separator == std::string::npos || separator == 0 || separator + 1 == record.size())
             throw std::runtime_error("The saved cryptographic identity is malformed");
-        auto protectedBytes = base64Decode(record->substr(0, separator));
-        auto der = unprotectPrivateKey(protectedBytes);
+        auto der = base64Decode(record.substr(0, separator));
+        if (legacyProtected) der = unprotectPrivateKey(der);
         const unsigned char* cursor = der.data();
         EVP_PKEY* rawKey = d2i_AutoPrivateKey(nullptr, &cursor, static_cast<long>(der.size()));
         if (!rawKey || cursor != der.data() + der.size()) cryptoError("Loading identity key");
         PrivateKey key(rawKey, EVP_PKEY_free);
 
-        const std::string certificatePem = record->substr(separator + 1);
+        const std::string certificatePem = record.substr(separator + 1);
         BioPtr bio(BIO_new_mem_buf(certificatePem.data(), static_cast<int>(certificatePem.size())), BIO_free);
         X509* rawCertificate = bio ? PEM_read_bio_X509(bio.get(), nullptr, nullptr, nullptr) : nullptr;
         if (!rawCertificate) cryptoError("Loading identity certificate");
         OPENSSL_cleanse(der.data(), der.size());
         return CryptoIdentity(std::move(key), Certificate(rawCertificate, X509_free));
+    };
+
+    if (const auto record = storage.getSetting(portableSetting))
+        return loadRecord(*record, false);
+
+    // Upgrade identities created by the previous Windows-only DPAPI format.
+    // Other platforms cannot decrypt that legacy value; they create a portable
+    // identity below instead of failing to start.
+    if (const auto legacy = storage.getSetting("crypto.identity.v1")) {
+#ifdef _WIN32
+        CryptoIdentity identity = loadRecord(*legacy, true);
+        int derSize = i2d_PrivateKey(identity.key_.get(), nullptr);
+        if (derSize <= 0) cryptoError("Serializing identity key");
+        std::vector<unsigned char> der(static_cast<std::size_t>(derSize));
+        unsigned char* cursor = der.data();
+        if (i2d_PrivateKey(identity.key_.get(), &cursor) != derSize) cryptoError("Serializing identity key");
+        storage.setSetting(portableSetting, identityRecord(der, identity.certificate_.get()));
+        OPENSSL_cleanse(der.data(), der.size());
+        return identity;
+#else
+        (void)legacy;
+#endif
     }
 
     CryptoIdentity identity = generate();
@@ -183,11 +211,8 @@ CryptoIdentity CryptoIdentity::loadOrCreate(StorageManager& storage)
     std::vector<unsigned char> der(static_cast<std::size_t>(derSize));
     unsigned char* cursor = der.data();
     if (i2d_PrivateKey(identity.key_.get(), &cursor) != derSize) cryptoError("Serializing identity key");
-    const auto protectedBytes = protectPrivateKey(der);
+    storage.setSetting(portableSetting, identityRecord(der, identity.certificate_.get()));
     OPENSSL_cleanse(der.data(), der.size());
-    const std::string record = base64Encode(protectedBytes.data(), protectedBytes.size()) +
-        "\n" + certificateToPem(identity.certificate_.get());
-    storage.setSetting(identitySetting, record);
     return identity;
 }
 
@@ -202,11 +227,20 @@ std::shared_ptr<asio::ssl::context> CryptoIdentity::makeTlsContext() const
         SSL_CTX_check_private_key(context->native_handle()) != 1)
         cryptoError("Configuring TLS 1.3 identity");
 
+    SSL_CTX_set_alpn_select_cb(context->native_handle(), &selectP2pChatAlpn, nullptr);
+
     context->set_verify_mode(asio::ssl::verify_peer | asio::ssl::verify_fail_if_no_peer_cert);
     // Trust is self-certifying: after TLS proves possession of this key, Session
     // requires the application peer id to equal SHA-256(SubjectPublicKeyInfo).
     context->set_verify_callback([](bool, asio::ssl::verify_context&) { return true; });
     return context;
+}
+
+void CryptoIdentity::configureQuicClientAlpn(SSL* ssl)
+{
+    if (!ssl || SSL_set_alpn_protos(ssl, kP2pChatAlpn,
+            static_cast<unsigned int>(sizeof(kP2pChatAlpn))) != 0)
+        cryptoError("Configuring QUIC application protocol");
 }
 
 PeerId CryptoIdentity::peerIdFromKey(EVP_PKEY* key)
