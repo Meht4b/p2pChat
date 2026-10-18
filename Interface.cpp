@@ -181,6 +181,12 @@ void Interface::connect(const std::string& address, int port)
     peer_manager->connect(address, static_cast<unsigned short>(port));
 }
 
+void Interface::connectRoom(const std::string& room_token, const std::string& relay_server)
+{
+    if (!peer_manager || !peer_manager->isRunning()) { printLineError("Peer manager is not running; use /start"); return; }
+    peer_manager->connectRoom(room_token, relay_server);
+}
+
 void Interface::showPeers()
 {
     if (!peer_manager || !peer_manager->isRunning()) { printLineError("Peer manager is not running"); return; }
@@ -263,6 +269,11 @@ void Interface::onPeerManagerError(const asio::error_code& error)
 void Interface::onPeerOperationError(const asio::error_code& error)
 {
     printLineError("Peer operation failed: " + error.message());
+}
+
+void Interface::onPeerRoomError(const std::string& message)
+{
+    printLineError("Room connection failed: " + message);
 }
 
 void Interface::onPeerConnection(bool incoming, const asio::error_code& error)

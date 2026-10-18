@@ -27,6 +27,12 @@
     <ClCompile Include="PeerManager.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="RoomConnection.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="RoomProtocol.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="ConsoleInterface.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -69,6 +75,12 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="PeerManagerCallbackHandler.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="RoomConnection.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="RoomProtocol.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="StorageManager.h">

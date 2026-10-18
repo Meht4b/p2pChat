@@ -6,6 +6,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 option(P2P_BUILD_APP   "Build the console application (needs FTXUI)" ON)
 option(P2P_BUILD_TESTS "Build the tests" ON)
+option(P2P_BUILD_RELAY_SERVER "Build the separate rendezvous and TURN relay service" ON)
 
 include(FetchContent)
 find_package(Threads REQUIRED)
@@ -13,6 +14,7 @@ find_package(SQLite3 REQUIRED)
 # ngtcp2's OpenSSL QUIC TLS backend requires OpenSSL's QUIC API (3.5+).
 find_package(OpenSSL 3.5 REQUIRED COMPONENTS SSL Crypto)
 find_package(ngtcp2 CONFIG REQUIRED)
+find_package(LibJuice CONFIG REQUIRED)
 
 # standalone asio
 find_path(ASIO_INCLUDE_DIR asio.hpp)
@@ -27,14 +29,19 @@ endif()
 
 # everything except the UI
 add_library(p2pcore STATIC
-  PeerId.cpp TextSanitizer.cpp Message.cpp CryptoIdentity.cpp Session.cpp PeerManager.cpp StorageManager.cpp)
+  PeerId.cpp TextSanitizer.cpp Message.cpp RoomProtocol.cpp RoomConnection.cpp CryptoIdentity.cpp Session.cpp PeerManager.cpp StorageManager.cpp)
 target_include_directories(p2pcore PUBLIC ${CMAKE_CURRENT_SOURCE_DIR} ${ASIO_INCLUDE_DIR})
 target_compile_definitions(p2pcore PUBLIC ASIO_STANDALONE)
-target_link_libraries(p2pcore PUBLIC Threads::Threads SQLite3::SQLite3 OpenSSL::SSL OpenSSL::Crypto
+target_link_libraries(p2pcore PUBLIC Threads::Threads SQLite::SQLite3 OpenSSL::SSL OpenSSL::Crypto
   ngtcp2::ngtcp2 ngtcp2::ngtcp2_crypto_ossl)
+target_link_libraries(p2pcore PUBLIC LibJuice::LibJuice)
 if(WIN32)
   target_compile_definitions(p2pcore PUBLIC _WIN32_WINNT=0x0A00)
   target_link_libraries(p2pcore PUBLIC ws2_32 mswsock Crypt32)
+endif()
+
+if(P2P_BUILD_RELAY_SERVER)
+  add_subdirectory(relay-server)
 endif()
 if(MSVC)
   target_compile_options(p2pcore PUBLIC /W4)

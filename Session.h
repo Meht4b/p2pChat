@@ -35,7 +35,8 @@ public:
     Session(asio::ip::udp::socket& socket, UdpEndpoint remote,
         std::shared_ptr<asio::ssl::context> tls_context, PeerInfo local,
         SessionCallbackHandler* session_callback, ConnectionDirection direction,
-        DatagramSender send_datagram, CidRegistrar register_cid);
+        DatagramSender send_datagram, CidRegistrar register_cid,
+        std::optional<UdpEndpoint> local_path_endpoint = std::nullopt);
     ~Session();
 
     // Outgoing sessions call initiateHandshake() then start(). Incoming
@@ -63,6 +64,7 @@ private:
     };
 
     asio::ip::udp::socket& udp_socket_;
+    std::optional<UdpEndpoint> local_path_endpoint_;
     UdpEndpoint remote_endpoint_;
     std::shared_ptr<asio::ssl::context> tls_context_;
     std::shared_ptr<asio::steady_timer> expiry_timer_;

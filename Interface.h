@@ -76,6 +76,7 @@ public:
      
 	// Connects to a peer at the specified address and port(delegates to the peer manager).
     void connect(const std::string& address, int port);
+    void connectRoom(const std::string& room_token, const std::string& relay_server);
 
 	// Shows the list of connected peers.
     void showPeers();
@@ -103,6 +104,7 @@ public:
     //handles errors
     void onPeerManagerError(const asio::error_code& error) override;
     void onPeerOperationError(const asio::error_code& error) override;
+    void onPeerRoomError(const std::string& message) override;
     void onPeerSessionError(bool identified, const PeerId& peer_id, const asio::error_code& error) override;
 
 	//when a connection is established , either incoming or outgoing, this callback is invoked

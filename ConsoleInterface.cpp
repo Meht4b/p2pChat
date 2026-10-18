@@ -363,7 +363,7 @@ ConsoleInterface::ConsoleInterface(Interface& interface)
         { "start",      "/start [port]",
           [this](std::istringstream& args) { return start(args); } },
 
-        { "connect",    "/connect <address> <port>",
+        { "connect",    "/connect <local-ip> <port> | /connect <room-token> <relay-server[:port]>",
           [this](std::istringstream& args) { return connect(args); } },
 
         { "showpeers",  "/showpeers",
@@ -539,12 +539,11 @@ bool ConsoleInterface::start(std::istringstream& args)
 
 bool ConsoleInterface::connect(std::istringstream& args)
 {
-    std::string address;
-    int port;
-    if (!(args >> address >> port) || port < 1 || port > 65535)
-        return false;
-
-    interface.connect(address, port);
+    std::string first, second, extra;
+    if (!(args >> first >> second) || (args >> extra)) return false;
+    int port = 0;
+    if (parseInt(second, 1, 65535, port)) interface.connect(first, port);
+    else interface.connectRoom(first, second);
     return true;
 }
 

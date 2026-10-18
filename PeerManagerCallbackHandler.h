@@ -16,6 +16,11 @@ public:
     virtual void onPeerManagerStarted(uint16_t port, const PeerInfo& local) = 0;
     virtual void onPeerManagerError(const asio::error_code& error) = 0;
     virtual void onPeerOperationError(const asio::error_code& error) = 0;
+    virtual void onPeerRoomError(const std::string& message)
+    {
+        (void)message;
+        onPeerOperationError(asio::error::make_error_code(asio::error::fault));
+    }
     virtual void onPeerConnection(bool incoming, const asio::error_code& error) = 0;
 
     // handshake finished; `peer.username` is what the peer announced about itself

@@ -17,6 +17,7 @@
 #include "PeerManager.h"
 #include "StorageManager.h"
 #include "TextSanitizer.h"
+#include "RoomProtocol.h"
 
 namespace {
 
@@ -33,6 +34,39 @@ int g_checks = 0;
     } while (0)
 
 void section(const char* name) { std::cout << "- " << name << "\n"; }
+
+void testRoomProtocol()
+{
+    section("room rendezvous protocol");
+    const std::string token = "a-private-room-token-32-chars";
+    const auto room = room_protocol::roomIdForToken(token);
+    CHECK(room == room_protocol::roomIdForToken(token));
+    CHECK(room != room_protocol::roomIdForToken(token + "x"));
+    bool short_token_rejected = false;
+    try { (void)room_protocol::roomIdForToken("too-short"); }
+    catch (const std::invalid_argument&) { short_token_rejected = true; }
+    CHECK(short_token_rejected);
+
+    const std::string description = "v=0\na=ice-ufrag:local123\na=ice-pwd:private\n";
+    const auto encrypted = room_protocol::encryptDescription(token, room, description);
+    CHECK(encrypted.size() == description.size() + 29);
+    std::string decrypted;
+    CHECK(room_protocol::decryptDescription(token, room, encrypted, decrypted));
+    CHECK(decrypted == description);
+    auto tampered = encrypted;
+    tampered.back() ^= 0x80;
+    CHECK(!room_protocol::decryptDescription(token, room, tampered, decrypted));
+    CHECK(!room_protocol::decryptDescription(token + "wrong", room, encrypted, decrypted));
+
+    const auto frame = room_protocol::encodeFrame(room_protocol::Type::Description, encrypted);
+    room_protocol::Frame parsed;
+    CHECK(room_protocol::decodeFrame(frame, parsed));
+    CHECK(parsed.type == room_protocol::Type::Description);
+    CHECK(parsed.payload == encrypted);
+    auto malformed = frame;
+    malformed[0] = 0x7f;
+    CHECK(!room_protocol::decodeFrame(malformed, parsed));
+}
 
 // ---- identity ---------------------------------------------------------------
 
@@ -395,6 +429,7 @@ void testNetworkRejectsUnboundPeerId()
 
 int main()
 {
+    testRoomProtocol();
     testPeerId();
     testHandshake();
     testSanitizer();

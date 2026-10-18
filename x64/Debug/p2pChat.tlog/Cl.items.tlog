@@ -5,6 +5,8 @@ C:\Users\mehth\source\repos\p2pChat\p2pChat\main.cpp;C:\Users\mehth\source\repos
 C:\Users\mehth\source\repos\p2pChat\p2pChat\Message.cpp;C:\Users\mehth\source\repos\p2pChat\p2pChat\x64\Debug\Message.obj
 C:\Users\mehth\source\repos\p2pChat\p2pChat\PeerId.cpp;C:\Users\mehth\source\repos\p2pChat\p2pChat\x64\Debug\PeerId.obj
 C:\Users\mehth\source\repos\p2pChat\p2pChat\PeerManager.cpp;C:\Users\mehth\source\repos\p2pChat\p2pChat\x64\Debug\PeerManager.obj
+C:\Users\mehth\source\repos\p2pChat\p2pChat\RoomConnection.cpp;C:\Users\mehth\source\repos\p2pChat\p2pChat\x64\Debug\RoomConnection.obj
+C:\Users\mehth\source\repos\p2pChat\p2pChat\RoomProtocol.cpp;C:\Users\mehth\source\repos\p2pChat\p2pChat\x64\Debug\RoomProtocol.obj
 C:\Users\mehth\source\repos\p2pChat\p2pChat\Session.cpp;C:\Users\mehth\source\repos\p2pChat\p2pChat\x64\Debug\Session.obj
 C:\Users\mehth\source\repos\p2pChat\p2pChat\StorageManager.cpp;C:\Users\mehth\source\repos\p2pChat\p2pChat\x64\Debug\StorageManager.obj
 C:\Users\mehth\source\repos\p2pChat\p2pChat\TextSanitizer.cpp;C:\Users\mehth\source\repos\p2pChat\p2pChat\x64\Debug\TextSanitizer.obj

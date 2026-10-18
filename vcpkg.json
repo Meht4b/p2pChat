@@ -3,6 +3,7 @@
   "version-string": "0.1.0",
   "dependencies": [
     "ftxui",
+    "libjuice",
     {
       "name": "ngtcp2",
       "features": ["openssl"]

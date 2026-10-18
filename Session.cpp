@@ -72,8 +72,10 @@ ngtcp2_callbacks Session::makeCallbacks(bool server)
 Session::Session(asio::ip::udp::socket& socket, UdpEndpoint remote,
     std::shared_ptr<asio::ssl::context> tls_context, PeerInfo local,
     SessionCallbackHandler* callback, ConnectionDirection direction,
-    DatagramSender send_datagram, CidRegistrar register_cid)
-    : udp_socket_(socket), remote_endpoint_(std::move(remote)),
+    DatagramSender send_datagram, CidRegistrar register_cid,
+    std::optional<UdpEndpoint> local_path_endpoint)
+    : udp_socket_(socket), local_path_endpoint_(std::move(local_path_endpoint)),
+      remote_endpoint_(std::move(remote)),
       tls_context_(std::move(tls_context)),
       expiry_timer_(std::make_shared<asio::steady_timer>(socket.get_executor())),
       local_(std::move(local)), session_callback_(callback), direction_(direction),
@@ -132,7 +134,7 @@ void Session::initializeConnection(bool server, const ngtcp2_pkt_hd* initial_hea
 {
     if (conn_) throw std::logic_error("QUIC connection already initialized");
 
-    auto local_endpoint = udp_socket_.local_endpoint();
+    const auto local_endpoint = local_path_endpoint_.value_or(udp_socket_.local_endpoint());
     ngtcp2_path_storage_init(&path_storage_,
         reinterpret_cast<const ngtcp2_sockaddr*>(local_endpoint.data()),
         static_cast<ngtcp2_socklen>(local_endpoint.size()),
@@ -224,7 +226,7 @@ void Session::onDatagram(const uint8_t* packet, std::size_t packet_size,
 void Session::consumeDatagram(const uint8_t* packet, std::size_t packet_size,
     const UdpEndpoint& source)
 {
-    auto local_endpoint = udp_socket_.local_endpoint();
+    const auto local_endpoint = local_path_endpoint_.value_or(udp_socket_.local_endpoint());
     ngtcp2_path_storage_init(&path_storage_,
         reinterpret_cast<const ngtcp2_sockaddr*>(local_endpoint.data()),
         static_cast<ngtcp2_socklen>(local_endpoint.size()),

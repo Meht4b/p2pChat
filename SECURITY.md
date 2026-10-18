@@ -14,20 +14,41 @@ quiet chat and helps maintain UDP/NAT state. It is a liveness aid, not a promise
 that every router or network will retain a mapping indefinitely; a peer that
 is offline or unreachable still disconnects after transport failure detection.
 
-`PeerManager` owns one bound UDP socket. It routes incoming QUIC datagrams to
-sessions by the destination connection ID. A `Session` owns only the QUIC and
-TLS state; it receives datagrams and emits datagrams through callbacks. This
-keeps message framing and session behavior independent from how UDP packets
-reach the socket, which provides a place to add ICE-selected paths or relay
-encapsulation later.
+`PeerManager` owns one bound UDP socket for manually configured connections.
+It routes incoming QUIC datagrams to sessions by destination connection ID. A
+`Session` owns only QUIC and TLS state and sends packets through a callback.
+For room connections, libjuice owns the ICE-selected UDP path and its callbacks
+carry the QUIC packets; the same `Session` logic runs over that path. QUIC is
+still the end-to-end security boundary.
 TLS negotiates the application protocol identifier `p2pchat/1` so a client
 cannot accidentally establish a chat session against a different QUIC service.
 
-The app currently supports direct connections to a numeric IP address. It does
-not yet implement STUN, ICE candidate exchange, hole punching, a relay, or
-address discovery. Both peers still need a reachable UDP path, such as the same
-LAN or manually configured router forwarding. The shared socket is not yet
-demultiplexing STUN or relay packets.
+`/connect <local-ip> <port>` creates a manual direct QUIC connection.
+`/connect <room-token> <relay-host[:port]>` uses TLS-protected rendezvous
+signaling and libjuice ICE. The first and second participants exchange their
+ICE descriptions through the service; libjuice attempts a direct UDP path and
+uses TURN if direct connectivity fails. QUIC starts only after ICE reports a
+selected path. Signaling defaults to TCP port 7443 and STUN/TURN to UDP port
+3478; the server also needs its configured UDP relay port range reachable.
+The relay host certificate must validate against OpenSSL's configured default
+CA paths (or the PEM bundle selected by `P2P_RENDEZVOUS_CA_FILE`) and match the
+relay hostname/IP entered by the client.
+
+The room server receives only SHA-256 of the room token as its room key and
+AES-256-GCM encrypted ICE descriptions. The token must be private and generated
+with high entropy (at least 16 random characters; length alone does not make a
+human-chosen phrase safe). TURN credentials are random, temporary, and limited
+to one allocation per credential. For a public server behind NAT, configure
+`--external-address` to the public address that TURN should advertise.
+
+This does not make the relay anonymous. The rendezvous/TURN operator can see
+client IP addresses, connection timing, room occupancy, packet sizes/volume,
+and TURN allocation/peer routing metadata. The server does not receive app
+usernames, PeerIds, or QUIC chat plaintext. A malicious rendezvous can deny
+service or attempt traffic redirection; QUIC certificate identity validation
+still prevents it from impersonating a peer, but first-contact PeerIds should
+be verified out of band when identity assurance matters. TURN is a packet
+forwarder, not an offline store-and-forward mailbox.
 
 The ngtcp2 core implements QUIC. This project uses ngtcp2's OpenSSL TLS backend,
 which is marked experimental by ngtcp2 and requires OpenSSL 3.5 or newer for its
@@ -58,12 +79,13 @@ identity-format upgrade.
 
 ## Limits
 
-QUIC protects traffic between the two endpoints, including through a future
-transparent UDP relay. A relay cannot read or change authenticated stream
+QUIC protects traffic between the two endpoints, including through a TURN
+relay. A relay cannot read or change authenticated stream
 contents, but it can observe endpoint addresses, connection IDs, timing, packet
 sizes, and traffic volume, and can drop or delay packets. This transport does
 not provide offline store-and-forward, message signatures, a double ratchet,
 post-compromise recovery, group encryption, or anonymity. The SQLite chat
-history is stored as plaintext on the local device. A future relay that stores
-messages beyond a live QUIC connection will need a separate encrypted message
-envelope and delivery protocol.
+history is stored as plaintext on the local device. The current server does not
+store chat messages beyond forwarding live ICE/QUIC packets. Durable offline
+delivery would require a separate encrypted message envelope and delivery
+protocol.

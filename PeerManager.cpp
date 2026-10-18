@@ -1,6 +1,7 @@
 #include "PeerManager.h"
 
 #include <stdexcept>
+#include <charconv>
 #include <utility>
 
 namespace {
@@ -24,6 +25,39 @@ void ensureQuicCryptoRuntime()
 {
     static QuicCryptoRuntime runtime;
     (void)runtime;
+}
+
+std::pair<std::string, std::uint16_t> parseRelayEndpoint(const std::string& value)
+{
+    constexpr std::uint16_t default_port = 7443;
+    std::string host;
+    std::string port_text;
+    if (!value.empty() && value.front() == '[') {
+        const auto close = value.find(']');
+        if (close == std::string::npos) throw std::invalid_argument("Invalid bracketed relay address");
+        host = value.substr(1, close - 1);
+        if (close + 1 < value.size()) {
+            if (value[close + 1] != ':') throw std::invalid_argument("Invalid relay address suffix");
+            port_text = value.substr(close + 2);
+        }
+    } else {
+        const auto first = value.find(':');
+        const auto last = value.rfind(':');
+        if (first != std::string::npos && first == last) {
+            host = value.substr(0, first);
+            port_text = value.substr(first + 1);
+        } else {
+            host = value;
+        }
+    }
+    if (host.empty()) throw std::invalid_argument("Relay server host cannot be empty");
+    if (port_text.empty()) return {host, default_port};
+    unsigned port = 0;
+    const auto parsed = std::from_chars(port_text.data(), port_text.data() + port_text.size(), port);
+    if (parsed.ec != std::errc{} || parsed.ptr != port_text.data() + port_text.size() ||
+        port == 0 || port > 65535)
+        throw std::invalid_argument("Relay signaling port must be between 1 and 65535");
+    return {host, static_cast<std::uint16_t>(port)};
 }
 
 } // namespace
@@ -81,8 +115,11 @@ void PeerManager::stop() noexcept
     socket.close(ignored);
     for (auto& entry : active_sessions) entry.second->close();
     for (auto& entry : pending_sessions) entry.second->close();
+    for (auto& entry : room_transports) entry.second.transport->close();
     active_sessions.clear();
     pending_sessions.clear();
+    room_transports.clear();
+    session_rooms.clear();
     cid_sessions.clear();
     send_queue.clear();
     cur_peer.reset();
@@ -194,6 +231,7 @@ void PeerManager::onPeerIdentified(const PeerInfo& peer, std::shared_ptr<Session
             callbacks.onPeerSessionError(true, id, asio::error::make_error_code(asio::error::fault));
         session->close();
         removeRoutes(session.get());
+        removeRoomTransport(session.get());
         return;
     }
     auto it = active_sessions.find(id);
@@ -212,9 +250,11 @@ void PeerManager::onPeerIdentified(const PeerInfo& peer, std::shared_ptr<Session
         it->second = std::move(session);
         removeRoutes(old.get());
         old->close();
+        removeRoomTransport(old.get());
     } else {
         removeRoutes(session.get());
         session->close();
+        removeRoomTransport(session.get());
     }
     callbacks.onDuplicatePeerConnection(id, keepNew);
 }
@@ -249,6 +289,141 @@ void PeerManager::connect(const std::string& address, unsigned short port)
         callbacks.onPeerConnection(false, {});
     } catch (...) {
         callbacks.onPeerConnection(false, asio::error::make_error_code(asio::error::fault));
+    }
+}
+
+void PeerManager::connectRoom(const std::string& room_token, const std::string& relay_server)
+{
+    std::lock_guard<std::recursive_mutex> lock(state_mutex);
+    if (!isRunning()) {
+        callbacks.onPeerOperationError(asio::error::make_error_code(asio::error::not_connected));
+        return;
+    }
+    try {
+        auto [host, port] = parseRelayEndpoint(relay_server);
+        auto room = std::make_shared<RoomConnection>(*io, std::move(host), port, room_token,
+            [this](std::shared_ptr<RoomConnection> connection, UdpEndpoint local_path,
+                UdpEndpoint remote_path, bool quic_client) {
+                onRoomReady(std::move(connection), std::move(local_path),
+                    std::move(remote_path), quic_client);
+            },
+            [this](std::shared_ptr<RoomConnection> connection, std::vector<std::uint8_t> packet) {
+                onRoomDatagram(std::move(connection), std::move(packet));
+            },
+            [this](std::shared_ptr<RoomConnection> connection, std::string error) {
+                onRoomError(std::move(connection), std::move(error));
+            });
+        room_transports.emplace(room.get(), RoomTransportState{room});
+        room->start();
+    } catch (const std::exception& error) {
+        callbacks.onPeerRoomError(error.what());
+    }
+}
+
+void PeerManager::onRoomReady(std::shared_ptr<RoomConnection> room,
+    UdpEndpoint local_path, UdpEndpoint remote_path, bool quic_client)
+{
+    std::lock_guard<std::recursive_mutex> lock(state_mutex);
+    const auto found = room_transports.find(room.get());
+    if (found == room_transports.end() || stopped) { room->close(); return; }
+    auto& state = found->second;
+    if (state.path_ready) return;
+    state.local_endpoint = std::move(local_path);
+    state.remote_endpoint = std::move(remote_path);
+    state.quic_client = quic_client;
+    state.path_ready = true;
+    if (!quic_client) return;
+
+    try {
+        auto session = std::make_shared<Session>(socket, state.remote_endpoint,
+            tls_context, local, this, ConnectionDirection::Outgoing,
+            [room](const UdpEndpoint&, std::vector<std::uint8_t> packet) {
+                (void)room->sendDatagram(packet);
+            },
+            [this](const std::string& cid, std::shared_ptr<Session> owner) {
+                registerCid(cid, std::move(owner));
+            }, state.local_endpoint);
+        state.session = session;
+        session_rooms.emplace(session.get(), room.get());
+        pending_sessions.emplace(session.get(), session);
+        session->initiateHandshake();
+        session->start();
+        callbacks.onPeerConnection(false, {});
+    } catch (const std::exception& error) {
+        onRoomError(std::move(room), error.what());
+    }
+}
+
+void PeerManager::onRoomDatagram(std::shared_ptr<RoomConnection> room,
+    std::vector<std::uint8_t> packet)
+{
+    std::lock_guard<std::recursive_mutex> lock(state_mutex);
+    const auto found = room_transports.find(room.get());
+    if (found == room_transports.end() || stopped || packet.empty()) return;
+    auto& state = found->second;
+    if (!state.path_ready) return;
+    if (state.session) {
+        state.session->onDatagram(packet.data(), packet.size(), state.remote_endpoint);
+        return;
+    }
+    if (state.quic_client) return;
+
+    ngtcp2_pkt_hd initial_header{};
+    if (ngtcp2_accept(&initial_header, packet.data(), packet.size()) != 0) return;
+    try {
+        auto session = std::make_shared<Session>(socket, state.remote_endpoint,
+            tls_context, local, this, ConnectionDirection::Incoming,
+            [room](const UdpEndpoint&, std::vector<std::uint8_t> outgoing) {
+                (void)room->sendDatagram(outgoing);
+            },
+            [this](const std::string& cid, std::shared_ptr<Session> owner) {
+                registerCid(cid, std::move(owner));
+            }, state.local_endpoint);
+        state.session = session;
+        session_rooms.emplace(session.get(), room.get());
+        pending_sessions.emplace(session.get(), session);
+        callbacks.onPeerConnection(true, {});
+        session->startServer(initial_header, packet.data(), packet.size());
+    } catch (const std::exception& error) {
+        onRoomError(std::move(room), error.what());
+    }
+}
+
+void PeerManager::onRoomError(std::shared_ptr<RoomConnection> room, std::string error)
+{
+    std::lock_guard<std::recursive_mutex> lock(state_mutex);
+    const auto found = room_transports.find(room.get());
+    if (found != room_transports.end()) {
+        auto session = found->second.session;
+        if (session) {
+            pending_sessions.erase(session.get());
+            session_rooms.erase(session.get());
+            removeRoutes(session.get());
+            for (auto it = active_sessions.begin(); it != active_sessions.end();) {
+                if (it->second == session) {
+                    const PeerId id = it->first;
+                    it = active_sessions.erase(it);
+                    if (cur_peer == id) cur_peer.reset();
+                    callbacks.onPeerDisconnected(id);
+                } else ++it;
+            }
+            session->close();
+        }
+        room_transports.erase(found);
+    }
+    room->close();
+    callbacks.onPeerRoomError(error);
+}
+
+void PeerManager::removeRoomTransport(Session* session)
+{
+    const auto association = session_rooms.find(session);
+    if (association == session_rooms.end()) return;
+    const auto found = room_transports.find(association->second);
+    session_rooms.erase(association);
+    if (found != room_transports.end()) {
+        found->second.transport->close();
+        room_transports.erase(found);
     }
 }
 
@@ -336,6 +511,7 @@ void PeerManager::onPeerDisconnected(const PeerId& id, std::shared_ptr<Session> 
     active_sessions.erase(it);
     if (cur_peer == id) cur_peer.reset();
     removeRoutes(session.get());
+    removeRoomTransport(session.get());
     callbacks.onPeerDisconnected(id);
 }
 
@@ -344,6 +520,7 @@ void PeerManager::onSessionError(std::optional<PeerId> id, std::shared_ptr<Sessi
 {
     std::lock_guard<std::recursive_mutex> lock(state_mutex);
     removeRoutes(session.get());
+    removeRoomTransport(session.get());
     if (id) {
         auto it = active_sessions.find(*id);
         if (it != active_sessions.end() && it->second == session) {

@@ -13,6 +13,7 @@
 
 #include "PeerId.h"
 #include "CryptoIdentity.h"
+#include "RoomConnection.h"
 #include "Session.h"
 #include "SessionCallbackHandler.h"
 #include "PeerManagerCallbackHandler.h"
@@ -27,10 +28,20 @@ class PeerManager : public SessionCallbackHandler
 private:
     using UdpEndpoint = asio::ip::udp::endpoint;
     struct PendingDatagram { UdpEndpoint endpoint; std::vector<uint8_t> bytes; };
+    struct RoomTransportState {
+        std::shared_ptr<RoomConnection> transport;
+        UdpEndpoint local_endpoint;
+        UdpEndpoint remote_endpoint;
+        std::shared_ptr<Session> session;
+        bool path_ready = false;
+        bool quic_client = false;
+    };
 
     std::unordered_map<PeerId, std::shared_ptr<Session>> active_sessions;
     std::unordered_map<std::string, std::shared_ptr<Session>> cid_sessions;
     std::unordered_map<Session*, std::shared_ptr<Session>> pending_sessions;
+    std::unordered_map<RoomConnection*, RoomTransportState> room_transports;
+    std::unordered_map<Session*, RoomConnection*> session_rooms;
     asio::ip::udp::socket socket;
     std::shared_ptr<asio::ssl::context> tls_context;
     PeerInfo local;
@@ -51,6 +62,7 @@ public:
 
     void onPeerIdentified(const PeerInfo& peer, std::shared_ptr<Session> session) override;
     void connect(const std::string& address, unsigned short port);
+    void connectRoom(const std::string& room_token, const std::string& relay_server);
     void selectPeer(const PeerId& peer);
     void deselectPeer();
     std::optional<PeerId> getSelectedPeer();
@@ -70,4 +82,9 @@ private:
     void registerCid(const std::string& cid, std::shared_ptr<Session> session);
     void removeRoutes(Session* session);
     void fail(const asio::error_code& error) noexcept;
+    void onRoomReady(std::shared_ptr<RoomConnection> room, UdpEndpoint local_path,
+        UdpEndpoint remote_path, bool quic_client);
+    void onRoomDatagram(std::shared_ptr<RoomConnection> room, std::vector<std::uint8_t> packet);
+    void onRoomError(std::shared_ptr<RoomConnection> room, std::string error);
+    void removeRoomTransport(Session* session);
 };

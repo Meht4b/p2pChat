@@ -26,6 +26,8 @@
     <ClCompile Include="Message.cpp" />
     <ClCompile Include="PeerId.cpp" />
     <ClCompile Include="PeerManager.cpp" />
+    <ClCompile Include="RoomConnection.cpp" />
+    <ClCompile Include="RoomProtocol.cpp" />
     <ClCompile Include="Session.cpp" />
     <ClCompile Include="StorageManager.cpp" />
     <ClCompile Include="TextSanitizer.cpp" />
@@ -38,6 +40,8 @@
     <ClInclude Include="PeerId.h" />
     <ClInclude Include="PeerManager.h" />
     <ClInclude Include="PeerManagerCallbackHandler.h" />
+    <ClInclude Include="RoomConnection.h" />
+    <ClInclude Include="RoomProtocol.h" />
     <ClInclude Include="Session.h" />
     <ClInclude Include="SessionCallbackHandler.h" />
     <ClInclude Include="StorageManager.h" />
