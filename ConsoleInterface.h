@@ -2,12 +2,14 @@
 
 #include <cstdint>
 #include <functional>
+#include <map>
 #include <mutex>
 #include <optional>
-#include <set>
 #include <sstream>
 #include <string>
 #include <vector>
+
+#include "PeerId.h"
 
 class Interface;
 
@@ -28,7 +30,15 @@ struct LogEntry
 {
     LogLevel level;
     std::string text;
-    uint8_t peer_id = 0;    // sender, only used by LogLevel::Incoming
+    std::string sender{};   // display name of the sender, only used by LogLevel::Incoming
+};
+
+// What the input line is currently used for.
+enum class InputMode
+{
+    Command,            // chat text and /commands
+    SetupUsername,      // first run: asking for a username
+    SetupPort           // first run: asking for the listening port
 };
 
 // Connection state shown in the title bar and sidebar.
@@ -36,9 +46,9 @@ struct ConsoleStatus
 {
     bool online = false;
     uint16_t port = 0;
-    uint8_t user_id = 0;
-    std::optional<uint8_t> selected_peer;   // set while chatting
-    std::set<uint8_t> peers;                // identified, connected peers
+    PeerInfo self;                                  // our own id and username
+    std::optional<PeerId> selected_peer;            // set while chatting
+    std::map<PeerId, std::string> peers;            // connected peers and their display names
 };
 
 // Consistent copy of everything the renderer needs for one frame.
@@ -54,6 +64,8 @@ public:
     explicit ConsoleInterface(Interface& interface);
 
     // Runs the UI loop; blocks until the user quits.
+    // On the first launch it asks for a username and port, afterwards it starts listening
+    // with the saved settings.
     void run();
 
     // Log output. Thread-safe, may be called from the network thread.
@@ -61,14 +73,14 @@ public:
     void printLineSuccess(const std::string& msg);
     void printLineError(const std::string& msg);
     void printLineIndent(const std::string& msg);
-    void printMessage(const std::string& msg, int user_id);
+    void printMessage(const std::string& msg, const PeerId& sender);
     void printSentMessage(const std::string& msg);
 
     // Status updates. Thread-safe.
-    void setOnline(uint16_t port, uint8_t user_id);
+    void setOnline(uint16_t port, const PeerInfo& self);
     void setOffline();
-    void onPeerConnected(uint8_t peer_id);
-    void onPeerDisconnected(uint8_t peer_id);
+    void onPeerConnected(const PeerInfo& peer);
+    void onPeerDisconnected(const PeerId& peer_id);
 
 private:
     // A slash command. The usage string drives help, the sidebar and usage errors.
@@ -80,7 +92,16 @@ private:
         std::function<bool(std::istringstream&)> handler;
     };
 
-    // input handling
+    enum class PeerLookup { Found, NotFound, Ambiguous };
+
+    // startup and first-run setup (UI thread)
+    void beginStartup();
+    void beginSetup();
+    void handleSetupInput(const std::string& line);
+    void setMode(InputMode new_mode);
+    void refreshSelf();
+
+    // input handling (UI thread)
     void handleInput(const std::string& line);
     void runCommand(const std::string& command_line);
     const Command* findCommand(const std::string& name) const;
@@ -97,15 +118,22 @@ private:
     // state access
     void append(LogEntry entry);
     void updateStatus(const std::function<void(ConsoleStatus&)>& change);
-    void setSelectedPeer(std::optional<uint8_t> peer_id);
+    void setSelectedPeer(std::optional<PeerId> peer_id);
     bool hasSelectedPeer() const;
+    std::string peerName(const PeerId& peer_id) const;
+    PeerLookup resolvePeer(const std::string& token, PeerId& out) const;
     ConsoleSnapshot snapshot() const;
     void setRedraw(std::function<void()> redraw);
     void redrawLocked() const;      // caller must hold state_mutex
 
     Interface& interface;
     std::string input;
+    std::string placeholder;                // input hint, depends on mode
     std::vector<Command> commands;
+
+    // UI thread only
+    InputMode mode = InputMode::Command;
+    std::string pending_username;           // answer to the first setup question
 
     // guarded by state_mutex (shared with the network thread)
     mutable std::mutex state_mutex;

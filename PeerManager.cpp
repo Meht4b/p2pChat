@@ -4,9 +4,9 @@
 #include <utility>
 #include <mutex>
 
-PeerManager::PeerManager(asio::io_context* context, uint8_t id, int port,
+PeerManager::PeerManager(asio::io_context* context, PeerInfo local_info, const CryptoIdentity& identity, int port,
     PeerManagerCallbackHandler& event_handler)
-    : acceptor(*context), peer_id(id), io(context), callbacks(event_handler)
+    : acceptor(*context), tls_context(identity.makeTlsContext()), local(std::move(local_info)), io(context), callbacks(event_handler)
 {
     if (!context) throw std::invalid_argument("PeerManager requires an io_context");
     if (port < 1 || port > 65535)
@@ -20,12 +20,19 @@ PeerManager::PeerManager(asio::io_context* context, uint8_t id, int port,
 
     acceptor.open(endpoint.protocol(), ec);
     if (ec) throw asio::system_error(ec);
+#ifndef _WIN32
+    // The app listens automatically on every launch, so a quick restart must not fail because
+    // the previous run's connections are still in TIME_WAIT. (Not done on Windows, where
+    // SO_REUSEADDR would let another process share the port.)
+    acceptor.set_option(asio::socket_base::reuse_address(true), ec);
+    if (ec) throw asio::system_error(ec);
+#endif
     acceptor.bind(endpoint, ec);
     if (ec) throw asio::system_error(ec);
     acceptor.listen(asio::socket_base::max_listen_connections, ec);
     if (ec) throw asio::system_error(ec);
 
-    callbacks.onPeerManagerStarted(static_cast<uint16_t>(port), peer_id);
+    callbacks.onPeerManagerStarted(static_cast<uint16_t>(port), local);
     accept();
 }
 
@@ -55,14 +62,15 @@ void PeerManager::stop() noexcept
     acceptor.close(ignored);
     for (auto& entry : active_sessions) entry.second->close();
     active_sessions.clear();
-    cur_peer = -1;
+    cur_peer.reset();
 }
 
-void PeerManager::onPeerIdentified(uint8_t id, std::shared_ptr<Session> session)
+void PeerManager::onPeerIdentified(const PeerInfo& peer, std::shared_ptr<Session> session)
 {
+    const PeerId& id = peer.id;
     std::lock_guard<std::recursive_mutex> lock(state_mutex);
-    if (stopped || id == peer_id) {
-        if (id == peer_id)
+    if (stopped || id == local.id) {
+        if (id == local.id)
             callbacks.onPeerSessionError(true, id, asio::error::make_error_code(asio::error::fault));
         session->close();
         return;
@@ -70,12 +78,12 @@ void PeerManager::onPeerIdentified(uint8_t id, std::shared_ptr<Session> session)
     auto it = active_sessions.find(id);
     if (it == active_sessions.end()) {
         active_sessions.emplace(id, std::move(session));
-        callbacks.onPeerIdentified(id);
+        callbacks.onPeerIdentified(peer);
         return;
     }
 
     // On simultaneous connects, the smaller ID keeps outgoing; the larger keeps incoming.
-    const bool keepNew = peer_id < id
+    const bool keepNew = local.id < id
         ? session->getDirection() == ConnectionDirection::Outgoing
         : session->getDirection() == ConnectionDirection::Incoming;
     if (keepNew) {
@@ -100,7 +108,8 @@ void PeerManager::accept()
         }
         callbacks.onPeerConnection(true, ec);
         try {
-            auto session = std::make_shared<Session>(std::move(socket), peer_id, this,
+            asio::ssl::stream<asio::ip::tcp::socket> tls(std::move(socket), *tls_context);
+            auto session = std::make_shared<Session>(std::move(tls), local, this,
                 ConnectionDirection::Incoming);
             session->initiateHandshake();
             session->start();
@@ -129,47 +138,44 @@ void PeerManager::connect(const std::string& address, unsigned short port)
             callbacks.onPeerConnection(false, error);
             if (error) return;
             try {
-                auto session = std::make_shared<Session>(std::move(*socket), peer_id, this,
+                asio::ssl::stream<asio::ip::tcp::socket> tls(std::move(*socket), *tls_context);
+                auto session = std::make_shared<Session>(std::move(tls), local, this,
                     ConnectionDirection::Outgoing);
                 session->initiateHandshake();
                 session->start();
             } catch (const std::exception&) {
-                callbacks.onPeerSessionError(false, 0, asio::error::make_error_code(asio::error::fault));
+                callbacks.onPeerSessionError(false, PeerId{}, asio::error::make_error_code(asio::error::fault));
             } catch (...) {
-                callbacks.onPeerSessionError(false, 0, asio::error::make_error_code(asio::error::fault));
+                callbacks.onPeerSessionError(false, PeerId{}, asio::error::make_error_code(asio::error::fault));
             }
         });
     } catch (const asio::system_error& e) { callbacks.onPeerConnection(false, e.code()); }
     catch (...) { callbacks.onPeerConnection(false, asio::error::make_error_code(asio::error::fault)); }
 }
 
-std::vector<uint8_t> PeerManager::showPeers()
+std::vector<PeerId> PeerManager::showPeers()
 {
     std::lock_guard<std::recursive_mutex> lock(state_mutex);
-    std::vector<uint8_t> peers;
+    std::vector<PeerId> peers;
     peers.reserve(active_sessions.size());
     for (const auto& [id, session] : active_sessions) peers.push_back(id);
     return peers;
 }
 
-void PeerManager::selectPeer(int user)
+void PeerManager::selectPeer(const PeerId& peer)
 {
     std::lock_guard<std::recursive_mutex> lock(state_mutex);
-    if (user < 0 || user > 255) {
-        callbacks.onPeerOperationError(asio::error::make_error_code(asio::error::invalid_argument));
-        return;
-    }
-    auto it = active_sessions.find(static_cast<uint8_t>(user));
+    auto it = active_sessions.find(peer);
     if (it == active_sessions.end()) {
         callbacks.onPeerOperationError(asio::error::make_error_code(asio::error::not_connected));
         return;
     }
     std::shared_ptr<Session> old_session;
-    if (cur_peer > 0) {
-        auto old = active_sessions.find(static_cast<uint8_t>(cur_peer));
+    if (cur_peer) {
+        auto old = active_sessions.find(*cur_peer);
         if (old != active_sessions.end()) old_session = old->second;
     }
-    cur_peer = user;
+    cur_peer = peer;
     auto selected = it->second;
     asio::post(*io, [old_session, selected] {
         if (old_session) old_session->deselectPeer();
@@ -180,9 +186,9 @@ void PeerManager::selectPeer(int user)
 void PeerManager::deselectPeer()
 {
     std::lock_guard<std::recursive_mutex> lock(state_mutex);
-    if (cur_peer <= 0) return;
-    auto it = active_sessions.find(static_cast<uint8_t>(cur_peer));
-    cur_peer = 0;
+    if (!cur_peer) return;
+    auto it = active_sessions.find(*cur_peer);
+    cur_peer.reset();
     if (it == active_sessions.end()) return;
     auto session = it->second;
     asio::post(*io, [session] { session->deselectPeer(); });
@@ -191,17 +197,18 @@ void PeerManager::deselectPeer()
 void PeerManager::write(const std::string& msg)
 {
     std::lock_guard<std::recursive_mutex> lock(state_mutex);
-    auto it = cur_peer < 0 ? active_sessions.end() : active_sessions.find(static_cast<uint8_t>(cur_peer));
+    auto it = cur_peer ? active_sessions.find(*cur_peer) : active_sessions.end();
     if (it == active_sessions.end()) {
         callbacks.onPeerOperationError(asio::error::make_error_code(asio::error::not_connected));
         return;
     }
     auto session = it->second;
+    const PeerId target = *cur_peer;
     try {
-        asio::post(*io, [this, session, msg] {
+        asio::post(*io, [this, session, target, msg] {
             try {
                 session->queueMessage({MessageType::Chat, std::vector<char>(msg.begin(), msg.end())});
-                callbacks.onLocalMessageSent(peer_id, msg);
+                callbacks.onLocalMessageSent(target, msg);
             } catch (const std::exception&) {
                 callbacks.onPeerOperationError(asio::error::make_error_code(asio::error::message_size));
             }
@@ -211,30 +218,26 @@ void PeerManager::write(const std::string& msg)
     }
 }
 
-void PeerManager::read(uint8_t id, const std::string& msg)
+void PeerManager::read(const PeerId& id, const std::string& msg)
 {
     callbacks.onPeerMessage(id, msg);
 }
 
-uint8_t PeerManager::getSelectedPeer() {
+std::optional<PeerId> PeerManager::getSelectedPeer() {
 	std::lock_guard<std::recursive_mutex> lock(state_mutex); return cur_peer;
 }
 
-void PeerManager::onPeerDisconnected(uint8_t id, std::shared_ptr<Session> session)
+void PeerManager::onPeerDisconnected(const PeerId& id, std::shared_ptr<Session> session)
 {
-    if (id == cur_peer) {
-        std::lock_guard<std::recursive_mutex> lock(state_mutex);
-        cur_peer = 0;
-    }
     std::lock_guard<std::recursive_mutex> lock(state_mutex);
     auto it = active_sessions.find(id);
     if (it == active_sessions.end() || it->second != session) return;
     active_sessions.erase(it);
-    if (cur_peer == id) cur_peer = -1;
+    if (cur_peer == id) cur_peer.reset();
     callbacks.onPeerDisconnected(id);
 }
 
-void PeerManager::onSessionError(std::optional<uint8_t> id, std::shared_ptr<Session> session,
+void PeerManager::onSessionError(std::optional<PeerId> id, std::shared_ptr<Session> session,
     const asio::error_code& error)
 {
     std::lock_guard<std::recursive_mutex> lock(state_mutex);
@@ -242,9 +245,9 @@ void PeerManager::onSessionError(std::optional<uint8_t> id, std::shared_ptr<Sess
         auto it = active_sessions.find(*id);
         if (it != active_sessions.end() && it->second == session) {
             active_sessions.erase(it);
-            if (cur_peer == *id) cur_peer = -1;
+            if (cur_peer == *id) cur_peer.reset();
             callbacks.onPeerDisconnected(*id);
         }
     }
-    callbacks.onPeerSessionError(id.has_value(), id.value_or(0), error);
+    callbacks.onPeerSessionError(id.has_value(), id.value_or(PeerId{}), error);
 }

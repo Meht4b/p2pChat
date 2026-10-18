@@ -18,6 +18,9 @@
     <ClCompile Include="main.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="CryptoIdentity.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="Session.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -30,13 +33,16 @@
     <ClCompile Include="Message.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="SessionCallbackHandler.h">
-      <Filter>Header Files</Filter>
-    </ClCompile>
     <ClCompile Include="Interface.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="StorageManager.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="PeerId.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="TextSanitizer.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
   </ItemGroup>
@@ -44,10 +50,16 @@
     <ClInclude Include="Message.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="CryptoIdentity.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
     <ClInclude Include="ConsoleInterface.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="Session.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="SessionCallbackHandler.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="PeerManager.h">
@@ -60,6 +72,12 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="StorageManager.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="PeerId.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="TextSanitizer.h">
       <Filter>Header Files</Filter>
     </ClInclude>
   </ItemGroup>

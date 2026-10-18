@@ -1,0 +1,9 @@
+{
+  "name": "p2p-chat",
+  "version-string": "0.1.0",
+  "dependencies": [
+    "ftxui",
+    "openssl",
+    "sqlite3"
+  ]
+}

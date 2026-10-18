@@ -1,7 +1,9 @@
 #include "ConsoleInterface.h"
 #include "Interface.h"
+#include "TextSanitizer.h"
 
 #include <algorithm>
+#include <cctype>
 #include <exception>
 #include <utility>
 
@@ -19,9 +21,10 @@ namespace
     const Color kSection = Color::Yellow;    // section titles
     const Color kChat    = Color::Magenta;   // everything related to the active chat
 
-    constexpr int    kSidebarWidth = 32;
-    constexpr size_t kTagWidth     = 6;
+    constexpr int    kSidebarWidth = 38;
+    constexpr size_t kTagWidth     = 11;     // widest chat tag is a 10 character name
     constexpr size_t kKeyWidth     = 9;
+    constexpr uint16_t kDefaultPort = 5000;
 
     std::string padRight(std::string s, size_t width)
     {
@@ -30,9 +33,40 @@ namespace
         return s;
     }
 
-    std::string peerLabel(uint8_t peer_id)
+    std::string truncate(const std::string& s, size_t width)
     {
-        return "peer " + std::to_string(static_cast<int>(peer_id));
+        return s.size() <= width ? s : s.substr(0, width);
+    }
+
+    std::string toLower(std::string s)
+    {
+        std::transform(s.begin(), s.end(), s.begin(),
+            [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        return s;
+    }
+
+    bool parseInt(const std::string& text, int min, int max, int& out)
+    {
+        try
+        {
+            size_t used = 0;
+            const int value = std::stoi(text, &used);
+            if (used != text.size() || value < min || value > max)
+                return false;
+            out = value;
+            return true;
+        }
+        catch (...)
+        {
+            return false;
+        }
+    }
+
+    // Display name of a peer: its username if we know it, else the short id.
+    std::string peerLabel(const ConsoleStatus& status, const PeerId& peer_id)
+    {
+        const auto it = status.peers.find(peer_id);
+        return it != status.peers.end() ? it->second : peer_id.shortHex();
     }
 
     // ---- log entries -----------------------------------------------------
@@ -58,8 +92,7 @@ namespace
         case LogLevel::Command:
             return { ">", kAccent, Color::Default, true };
         case LogLevel::Incoming:
-            return { "[" + std::to_string(static_cast<int>(entry.peer_id)) + "]",
-                     kChat, Color::Default, false };
+            return { truncate(entry.sender, kTagWidth - 1), kChat, Color::Default, false };
         case LogLevel::Outgoing:
             return { "you", Color::BlueLight, Color::Default, false };
         case LogLevel::Info:
@@ -90,7 +123,8 @@ namespace
 
         return hbox({
             text(" CHAT ") | bold | color(Color::Black) | bgcolor(kChat),
-            text("  " + peerLabel(*status.selected_peer)) | bold | color(kChat),
+            text("  " + peerLabel(status, *status.selected_peer)) | bold | color(kChat),
+            text("  " + status.selected_peer->shortHex()) | dim,
             filler(),
             text("/leave to go back") | dim,
         });
@@ -126,7 +160,7 @@ namespace
         if (status.selected_peer)
         {
             row.push_back(text("  /  ") | dim);
-            row.push_back(text(peerLabel(*status.selected_peer)) | bold | color(kChat));
+            row.push_back(text(peerLabel(status, *status.selected_peer)) | bold | color(kChat));
         }
 
         row.push_back(filler());
@@ -158,29 +192,41 @@ namespace
 
     Element renderStatusSection(const ConsoleStatus& status)
     {
-        if (!status.online)
+        Elements items;
+        if (!status.self.username.empty())
         {
-            return section("Status", {
-                text("not started") | dim,
-                text("run /start below") | dim,
-            });
+            items.push_back(keyValue("name", truncate(status.self.username, 24)));
+            items.push_back(keyValue("id",   status.self.id.shortHex()));
         }
 
-        return section("Status", {
-            keyValue("port",    std::to_string(status.port)),
-            keyValue("user id", std::to_string(static_cast<int>(status.user_id))),
-        });
+        if (status.online)
+        {
+            items.push_back(keyValue("port", std::to_string(status.port)));
+        }
+        else
+        {
+            items.push_back(text("not started") | dim);
+            items.push_back(text("run /start") | dim);
+        }
+
+        return section("Status", std::move(items));
     }
 
     // The peer being chatted with is shown as a highlighted block.
-    Element renderPeerRow(uint8_t peer_id, bool chatting)
+    Element renderPeerRow(const std::string& name, const PeerId& peer_id, bool chatting)
     {
-        const std::string label = " " + peerLabel(peer_id) + " ";
+        const std::string label = " " + truncate(name, 14) + " ";
         if (!chatting)
-            return text(label);
+        {
+            return hbox({
+                text(label),
+                text(peer_id.shortHex()) | dim,
+            });
+        }
 
         return hbox({
             text(label) | bold | color(Color::Black) | bgcolor(kChat),
+            text(" " + peer_id.shortHex()) | dim,
             text(" chatting") | color(kChat),
         });
     }
@@ -188,8 +234,8 @@ namespace
     Element renderPeersSection(const ConsoleStatus& status)
     {
         Elements rows;
-        for (uint8_t peer_id : status.peers)
-            rows.push_back(renderPeerRow(peer_id, status.selected_peer == peer_id));
+        for (const auto& [peer_id, name] : status.peers)
+            rows.push_back(renderPeerRow(name, peer_id, status.selected_peer == peer_id));
 
         if (rows.empty())
             rows.push_back(text("none yet") | dim);
@@ -219,11 +265,17 @@ namespace
 
     // ---- page ------------------------------------------------------------
 
-    Element renderPrompt(const ConsoleStatus& status, Element input_field)
+    Element renderPrompt(InputMode mode, const ConsoleStatus& status, Element input_field)
     {
-        Element label = status.selected_peer
-            ? text(peerLabel(*status.selected_peer) + " > ") | bold | color(kChat)
-            : text("> ") | bold | color(kAccent);
+        Element label;
+        if (mode == InputMode::SetupUsername)
+            label = text("username > ") | bold | color(kAccent);
+        else if (mode == InputMode::SetupPort)
+            label = text("port > ") | bold | color(kAccent);
+        else if (status.selected_peer)
+            label = text(truncate(peerLabel(status, *status.selected_peer), 14) + " > ") | bold | color(kChat);
+        else
+            label = text("> ") | bold | color(kAccent);
 
         return hbox({
             std::move(label),
@@ -233,6 +285,7 @@ namespace
 
     Element renderPage(const ConsoleSnapshot& snapshot,
                        const std::vector<std::string>& usages,
+                       InputMode mode,
                        Element input_field)
     {
         Element body = hbox({
@@ -249,7 +302,7 @@ namespace
                 text(""),
                 std::move(body),
                 text(""),
-                renderPrompt(snapshot.status, std::move(input_field)),
+                renderPrompt(mode, snapshot.status, std::move(input_field)),
                 text(""),
             }) | flex,
             text("   "),
@@ -258,8 +311,9 @@ namespace
 
     // ---- input component -------------------------------------------------
 
-    // Text field that calls `on_submit` with the line when Enter is pressed.
-    Component makeInput(std::string* content,
+    // Text field that calls `on_submit` with the line when Enter is pressed
+    // (also for an empty line: the setup questions have defaults).
+    Component makeInput(std::string* content, std::string* placeholder,
                         std::function<void(const std::string&)> on_submit)
     {
         InputOption option;
@@ -270,7 +324,7 @@ namespace
             return state.element;
         };
 
-        auto field = Input(content, "message or /command...", option);
+        auto field = Input(content, placeholder, option);
 
         return field | CatchEvent(
             [content, on_submit = std::move(on_submit)](Event event)
@@ -278,12 +332,9 @@ namespace
                 if (event != Event::Return)
                     return false;
 
-                if (!content->empty())
-                {
-                    const std::string line = std::move(*content);
-                    content->clear();
-                    on_submit(line);
-                }
+                const std::string line = std::move(*content);
+                content->clear();
+                on_submit(line);
                 return true;
             });
     }
@@ -309,7 +360,7 @@ ConsoleInterface::ConsoleInterface(Interface& interface)
     : interface(interface)
 {
     commands = {
-        { "start",      "/start <port> <user_id>",
+        { "start",      "/start [port]",
           [this](std::istringstream& args) { return start(args); } },
 
         { "connect",    "/connect <address> <port>",
@@ -318,7 +369,10 @@ ConsoleInterface::ConsoleInterface(Interface& interface)
         { "showpeers",  "/showpeers",
           [this](std::istringstream&) { this->interface.showPeers(); return true; } },
 
-        { "selectpeer", "/selectpeer <user_id>",
+        { "known",      "/known",
+          [this](std::istringstream&) { this->interface.showKnownPeers(); return true; } },
+
+        { "selectpeer", "/selectpeer <name|id>",
           [this](std::istringstream& args) { return selectPeer(args); } },
 
         { "leave",      "/leave",
@@ -340,35 +394,42 @@ void ConsoleInterface::printLineError(const std::string& msg)   { append({ LogLe
 void ConsoleInterface::printLineIndent(const std::string& msg)  { append({ LogLevel::Detail,   msg }); }
 void ConsoleInterface::printSentMessage(const std::string& msg) { append({ LogLevel::Outgoing, msg }); }
 
-void ConsoleInterface::printMessage(const std::string& msg, int user_id)
+void ConsoleInterface::printMessage(const std::string& msg, const PeerId& sender)
 {
-    append({ LogLevel::Incoming, msg, static_cast<uint8_t>(user_id) });
+    append({ LogLevel::Incoming, msg, peerName(sender) });
 }
 
 // ---- status ----------------------------------------------------------------
 
-void ConsoleInterface::setOnline(uint16_t port, uint8_t user_id)
+void ConsoleInterface::setOnline(uint16_t port, const PeerInfo& self)
 {
     updateStatus([&](ConsoleStatus& s)
     {
-        s = ConsoleStatus{};
         s.online = true;
         s.port = port;
-        s.user_id = user_id;
+        s.self = self;
+        s.peers.clear();
+        s.selected_peer.reset();
     });
 }
 
 void ConsoleInterface::setOffline()
 {
-    updateStatus([](ConsoleStatus& s) { s = ConsoleStatus{}; });
+    updateStatus([](ConsoleStatus& s)
+    {
+        s.online = false;
+        s.port = 0;
+        s.peers.clear();
+        s.selected_peer.reset();
+    });
 }
 
-void ConsoleInterface::onPeerConnected(uint8_t peer_id)
+void ConsoleInterface::onPeerConnected(const PeerInfo& peer)
 {
-    updateStatus([&](ConsoleStatus& s) { s.peers.insert(peer_id); });
+    updateStatus([&](ConsoleStatus& s) { s.peers[peer.id] = peer.username; });
 }
 
-void ConsoleInterface::onPeerDisconnected(uint8_t peer_id)
+void ConsoleInterface::onPeerDisconnected(const PeerId& peer_id)
 {
     updateStatus([&](ConsoleStatus& s)
     {
@@ -378,7 +439,7 @@ void ConsoleInterface::onPeerDisconnected(uint8_t peer_id)
     });
 }
 
-void ConsoleInterface::setSelectedPeer(std::optional<uint8_t> peer_id)
+void ConsoleInterface::setSelectedPeer(std::optional<PeerId> peer_id)
 {
     updateStatus([&](ConsoleStatus& s) { s.selected_peer = peer_id; });
 }
@@ -388,6 +449,12 @@ void ConsoleInterface::setSelectedPeer(std::optional<uint8_t> peer_id)
 // "/command args" runs a command; anything else is sent to the selected peer.
 void ConsoleInterface::handleInput(const std::string& line)
 {
+    if (mode != InputMode::Command)
+    {
+        handleSetupInput(line);
+        return;
+    }
+
     if (line.empty())
         return;
 
@@ -396,7 +463,7 @@ void ConsoleInterface::handleInput(const std::string& line)
     else if (hasSelectedPeer())
         interface.write(line);
     else
-        printLineError("No peer selected: use /selectpeer <user_id>");
+        printLineError("No peer selected: use /selectpeer <name|id>");
 }
 
 void ConsoleInterface::runCommand(const std::string& command_line)
@@ -449,13 +516,24 @@ std::vector<std::string> ConsoleInterface::commandUsages() const
 
 // ---- commands --------------------------------------------------------------
 
+// /start        listens on the saved port
+// /start <port> listens on that port for this run
 bool ConsoleInterface::start(std::istringstream& args)
 {
-    int port, user;
-    if (!(args >> port >> user) || port < 1 || port > 65535 || user < 0 || user > 255)
+    std::string port_text;
+    args >> port_text;
+
+    if (port_text.empty())
+    {
+        interface.start();
+        return true;
+    }
+
+    int port = 0;
+    if (!parseInt(port_text, 1, 65535, port))
         return false;
 
-    interface.start(port, static_cast<uint8_t>(user));
+    interface.start(port);
     return true;
 }
 
@@ -472,20 +550,34 @@ bool ConsoleInterface::connect(std::istringstream& args)
 
 bool ConsoleInterface::selectPeer(std::istringstream& args)
 {
-    int user;
-    if (!(args >> user) || user < 0 || user > 255)
+    std::string token;
+    args >> token;
+    if (token.empty())
         return false;
 
-    if (!interface.peerExists(user))
+    PeerId peer;
+    switch (resolvePeer(token, peer))
     {
-        printLineError("User has not been contacted / doesn't exist");
+    case PeerLookup::NotFound:
+        printLineError("No connected peer matches '" + token + "' (see /showpeers)");
+        return true;
+    case PeerLookup::Ambiguous:
+        printLineError("'" + token + "' matches several peers: type more of the id (see /showpeers)");
+        return true;
+    case PeerLookup::Found:
+        break;
+    }
+
+    if (!interface.peerExists(peer))
+    {
+        printLineError("That peer is no longer connected");
         return true;
     }
 
     clearLog();
-    setSelectedPeer(static_cast<uint8_t>(user));
-    printLineSuccess("Now chatting with peer " + std::to_string(user));
-    interface.selectPeer(user);     // queued messages are delivered after this line
+    setSelectedPeer(peer);
+    printLineSuccess("Now chatting with " + peerName(peer));
+    interface.selectPeer(peer);     // history and queued messages are delivered after this line
     return true;
 }
 
@@ -541,6 +633,38 @@ bool ConsoleInterface::hasSelectedPeer() const
     return status.selected_peer.has_value();
 }
 
+std::string ConsoleInterface::peerName(const PeerId& peer_id) const
+{
+    std::lock_guard<std::mutex> lock(state_mutex);
+    return peerLabel(status, peer_id);
+}
+
+// A peer is addressed by username (case-insensitive) or by the start of its id (4+ characters).
+ConsoleInterface::PeerLookup ConsoleInterface::resolvePeer(const std::string& token, PeerId& out) const
+{
+    const std::string wanted = toLower(token);
+
+    std::lock_guard<std::mutex> lock(state_mutex);
+
+    std::vector<PeerId> matches;
+    for (const auto& [id, name] : status.peers)
+        if (toLower(name) == wanted)
+            matches.push_back(id);
+
+    if (matches.empty() && wanted.size() >= 4)
+        for (const auto& entry : status.peers)
+            if (entry.first.toHex().compare(0, wanted.size(), wanted) == 0)
+                matches.push_back(entry.first);
+
+    if (matches.empty())
+        return PeerLookup::NotFound;
+    if (matches.size() > 1)
+        return PeerLookup::Ambiguous;
+
+    out = matches.front();
+    return PeerLookup::Found;
+}
+
 ConsoleSnapshot ConsoleInterface::snapshot() const
 {
     std::lock_guard<std::mutex> lock(state_mutex);
@@ -566,16 +690,95 @@ void ConsoleInterface::run()
 {
     auto screen = ScreenInteractive::Fullscreen();
 
-    auto input_field = makeInput(&input,
+    setMode(InputMode::Command);
+    auto input_field = makeInput(&input, &placeholder,
         [this](const std::string& line) { handleInput(line); });
 
     auto page = Renderer(input_field, [&]
     {
-        return renderPage(snapshot(), commandUsages(), input_field->Render());
+        return renderPage(snapshot(), commandUsages(), mode, input_field->Render());
     });
 
     setRedraw([&screen] { screen.PostEvent(Event::Custom); });
     ScopeExit unbind([this] { setRedraw(nullptr); });
 
+    beginStartup();
     screen.Loop(page);
+}
+
+// ---- startup and first-run setup -------------------------------------------
+
+// First launch: ask for a username and port. Later launches: listen with the saved settings.
+void ConsoleInterface::beginStartup()
+{
+    refreshSelf();
+
+    if (interface.needsSetup())
+        beginSetup();
+    else
+        interface.start();
+}
+
+void ConsoleInterface::beginSetup()
+{
+    printLine("Welcome! Let's set up your profile (this happens only once).");
+    printLine("Choose a username: letters, digits, '.', '_' or '-', up to 32 characters.");
+    setMode(InputMode::SetupUsername);
+}
+
+void ConsoleInterface::handleSetupInput(const std::string& line)
+{
+    if (mode == InputMode::SetupUsername)
+    {
+        if (!isValidUsername(line))
+        {
+            printLineError("Invalid username. Use 1-32 letters, digits, '.', '_' or '-'.");
+            return;
+        }
+
+        pending_username = line;
+        printLine("Which port should we listen on? (1-65535, Enter for " + std::to_string(kDefaultPort) + ")");
+        setMode(InputMode::SetupPort);
+        return;
+    }
+
+    int port = kDefaultPort;
+    if (!line.empty() && !parseInt(line, 1, 65535, port))
+    {
+        printLineError("Invalid port. Enter a number between 1 and 65535.");
+        return;
+    }
+
+    try
+    {
+        interface.saveProfile(pending_username, port);
+    }
+    catch (const std::exception& e)
+    {
+        printLineError(std::string("Could not save settings: ") + e.what());
+        return;
+    }
+
+    refreshSelf();
+    setMode(InputMode::Command);
+    printLineSuccess("Saved: " + pending_username + ", port " + std::to_string(port));
+    interface.start();
+}
+
+void ConsoleInterface::setMode(InputMode new_mode)
+{
+    mode = new_mode;
+    switch (mode)
+    {
+    case InputMode::SetupUsername: placeholder = "your username"; break;
+    case InputMode::SetupPort:     placeholder = "port, e.g. 5000"; break;
+    case InputMode::Command:       placeholder = "message or /command..."; break;
+    }
+}
+
+// Copies our own id and username from the Interface into the sidebar.
+void ConsoleInterface::refreshSelf()
+{
+    const PeerInfo self = interface.localPeer();
+    updateStatus([&](ConsoleStatus& s) { s.self = self; });
 }

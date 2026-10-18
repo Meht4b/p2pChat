@@ -9,6 +9,15 @@ int main()
     Interface interface;
     ConsoleInterface console(interface);
     interface.setConsole(&console);
+
+    // opens storage.db, loads (or creates) our identity and the saved username / port
+    try {
+        interface.initialize();
+    } catch (const std::exception& e) {
+        std::cerr << "Could not initialize: " << e.what() << '\n';
+        return 1;
+    }
+
     try {
         console.run();
     } catch (const std::exception& e) {

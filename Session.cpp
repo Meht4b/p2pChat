@@ -1,12 +1,13 @@
 #include "Session.h"
+#include "CryptoIdentity.h"
 
 #include <exception>
 #include <stdexcept>
 #include <utility>
 
-Session::Session(asio::ip::tcp::socket socket, uint8_t local_id,
+Session::Session(asio::ssl::stream<asio::ip::tcp::socket> socket, PeerInfo local_info,
     SessionCallbackHandler* callback, ConnectionDirection direction)
-    : socket(std::move(socket)), local_id(local_id), remote_id(0),
+    : socket(std::move(socket)), local(std::move(local_info)),
       session_callback(callback), direction(direction)
 {
     if (!session_callback) throw std::invalid_argument("Session requires a callback handler");
@@ -15,15 +16,43 @@ Session::Session(asio::ip::tcp::socket socket, uint8_t local_id,
 void Session::start()
 {
     if (closed) return;
-    try { readLength(); }
+    if (!handshake_requested) {
+        fail(asio::error::make_error_code(asio::error::invalid_argument));
+        return;
+    }
+    auto self = shared_from_this();
+    try {
+        const auto role = direction == ConnectionDirection::Incoming
+            ? asio::ssl::stream_base::server : asio::ssl::stream_base::client;
+        socket.async_handshake(role, [self](const asio::error_code& ec) {
+            try { self->onTlsReady(ec); }
+            catch (...) { self->fail(asio::error::make_error_code(asio::error::fault)); }
+        });
+    }
     catch (...) { fail(asio::error::make_error_code(asio::error::fault)); }
 }
 
 void Session::initiateHandshake()
 {
     if (closed) return;
-    try { queueMessage({MessageType::Handshake, {static_cast<char>(local_id)}}); }
-    catch (...) { fail(asio::error::make_error_code(asio::error::fault)); }
+    if (handshake_requested) {
+        fail(asio::error::make_error_code(asio::error::invalid_argument));
+        return;
+    }
+    handshake_requested = true;
+}
+
+void Session::onTlsReady(const asio::error_code& error)
+{
+    if (closed) return;
+    if (error) { fail(error); return; }
+    try {
+        tls_peer_id = CryptoIdentity::peerIdFromTlsPeer(socket.native_handle());
+        queueMessage(makeHandshake(local));
+        readLength();
+    } catch (...) {
+        fail(asio::error::make_error_code(asio::error::fault));
+    }
 }
 
 void Session::readLength()
@@ -73,10 +102,16 @@ void Session::processMessages(Message msg)
 {
     if (closed) return;
     if (msg.type == MessageType::Handshake) {
-        if (handshake_complete || msg.body.size() != 1) {
+        PeerInfo remote;
+        if (handshake_complete || !parseHandshake(msg.body, remote)) {
+            fail(asio::error::make_error_code(asio::error::invalid_argument)); return;
+        }
+        if (remote.id != tls_peer_id) {
+            // The peer id is cryptographically bound to the public key proved by
+            // the mutually authenticated TLS handshake.
             fail(asio::error::make_error_code(asio::error::fault)); return;
         }
-        handleHandshake(static_cast<uint8_t>(msg.body[0]));
+        handleHandshake(remote);
         return;
     }
     if (msg.type != MessageType::Chat || !handshake_complete) {
@@ -115,11 +150,11 @@ void Session::queueMessage(Message msg)
     if (!writing) flushWriteQueue();
 }
 
-void Session::handleHandshake(uint8_t id)
+void Session::handleHandshake(const PeerInfo& remote)
 {
-    remote_id = id;
+    remote_id = remote.id;
     handshake_complete = true;
-    try { session_callback->onPeerIdentified(id, shared_from_this()); }
+    try { session_callback->onPeerIdentified(remote, shared_from_this()); }
     catch (...) { fail(asio::error::make_error_code(asio::error::fault)); }
 }
 
@@ -144,12 +179,12 @@ void Session::fail(const asio::error_code& error) noexcept
     const bool identified = handshake_complete;
     closed = true;
     asio::error_code ignored;
-    socket.cancel(ignored);
-    socket.shutdown(asio::ip::tcp::socket::shutdown_both, ignored);
-    socket.close(ignored);
+    socket.lowest_layer().cancel(ignored);
+    socket.lowest_layer().shutdown(asio::ip::tcp::socket::shutdown_both, ignored);
+    socket.lowest_layer().close(ignored);
     try {
         session_callback->onSessionError(
-            identified ? std::optional<uint8_t>(remote_id) : std::nullopt,
+            identified ? std::optional<PeerId>(remote_id) : std::nullopt,
             shared_from_this(), error);
     } catch (...) {}
 }
@@ -164,7 +199,7 @@ void Session::close()
     if (closed) return;
     closed = true;
     asio::error_code ignored;
-    socket.cancel(ignored);
-    socket.shutdown(asio::ip::tcp::socket::shutdown_both, ignored);
-    socket.close(ignored);
+    socket.lowest_layer().cancel(ignored);
+    socket.lowest_layer().shutdown(asio::ip::tcp::socket::shutdown_both, ignored);
+    socket.lowest_layer().close(ignored);
 }

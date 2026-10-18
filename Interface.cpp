@@ -2,17 +2,44 @@
 #include "ConsoleInterface.h"
 #include "PeerManager.h"
 #include "StorageManager.h"
+#include "TextSanitizer.h"
+#include "CryptoIdentity.h"
 
 #include <algorithm>
+#include <ctime>
 #include <exception>
-#include <random>
+#include <stdexcept>
 #include <system_error>
 
-uint8_t generateUserId()
+namespace
 {
-    static std::random_device rd;
-    static std::mt19937 gen(rd());
-    return static_cast<uint8_t>(std::uniform_int_distribution<int>(0, 255)(gen));
+    constexpr const char* kIdentityKey = "identity";
+    constexpr const char* kUsernameKey = "username";
+    constexpr const char* kPortKey     = "port";
+
+    std::string formatTime(std::int64_t unix_ms)
+    {
+        const std::time_t seconds = static_cast<std::time_t>(unix_ms / 1000);
+        std::tm local{};
+#ifdef _WIN32
+        localtime_s(&local, &seconds);
+#else
+        localtime_r(&seconds, &local);
+#endif
+        char buffer[32];
+        std::strftime(buffer, sizeof(buffer), "%Y-%m-%d %H:%M", &local);
+        return buffer;
+    }
+
+    // "alice (1a2b3c4d)": the saved username if we know the peer, otherwise just the short id
+    std::string describePeer(StorageManager& storage, const PeerId& id)
+    {
+        try {
+            if (const auto known = storage.getKnownPeer(id))
+                return known->username + " (" + id.shortHex() + ")";
+        } catch (const std::exception&) {}
+        return id.shortHex();
+    }
 }
 
 Interface::Interface() = default;
@@ -32,40 +59,78 @@ void Interface::shutdown() noexcept
 
 void Interface::setConsole(ConsoleInterface* cs) { console_interface = cs; }
 
-void Interface::start(int port, uint8_t user) {
-    try {
-        startPeerManager(port, user);
-    } catch (const std::exception& e) {
-        printLineError(std::string("Failed to start peer manager: ") + e.what());
-        peer_manager->stop();
-        peer_manager.reset();
-        return;
-    } catch (...) {
-        printLineError("Failed to start peer manager due to an unknown error");
-        peer_manager->stop();
-        peer_manager.reset();
-        return;
-    }
-
-    try {
-        startStorageManager("storage.db", 100);
-    } catch (const std::exception& e) {
-        printLineError(std::string("Failed to start storage manager: ") + e.what());
-        peer_manager->stop();
-        peer_manager.reset(); 
-		storage_manager.reset();
-        return;
-	}
-	catch (...) {
-        printLineError("Failed to start storage manager due to an unknown error");     
-        peer_manager->stop();
-        peer_manager.reset(); 
-		storage_manager.reset();
-        return; 
-	}
+StorageManager& Interface::storage()
+{
+    if (!storage_manager) throw std::logic_error("Interface::initialize() has not been called");
+    return *storage_manager;
 }
 
-void Interface::startPeerManager(int port, uint8_t user)
+// ---- identity and profile ---------------------------------------------------
+
+void Interface::initialize(const std::string& storage_path)
+{
+    storage_manager = std::make_unique<StorageManager>(storage_path, 100);
+
+    // The TLS signing key is persistent and protected by Windows DPAPI. The
+    // public-key fingerprint is the stable peer ID shared in the app handshake.
+    crypto_identity = CryptoIdentity::loadOrCreate(*storage_manager);
+    local_id = crypto_identity.peerId();
+
+    // first-run settings: ignored (and asked for again) if missing or invalid
+    const auto saved_name = storage_manager->getSetting(kUsernameKey);
+    const auto saved_port = storage_manager->getSetting(kPortKey);
+    if (saved_name && saved_port && isValidUsername(*saved_name)) {
+        try {
+            std::size_t used = 0;
+            const int port = std::stoi(*saved_port, &used);
+            if (used == saved_port->size() && port >= 1 && port <= 65535) {
+                username = *saved_name;
+                listen_port = static_cast<uint16_t>(port);
+            }
+        } catch (const std::exception&) {}
+    }
+}
+
+bool Interface::needsSetup() const { return username.empty() || !listen_port; }
+
+void Interface::saveProfile(const std::string& new_username, int port)
+{
+    if (!isValidUsername(new_username))
+        throw std::invalid_argument("Username must be 1-32 characters: letters, digits, '.', '_' or '-'");
+    if (port < 1 || port > 65535)
+        throw std::invalid_argument("Port must be between 1 and 65535");
+
+    storage().setSetting(kUsernameKey, new_username);
+    storage().setSetting(kPortKey, std::to_string(port));
+    username = new_username;
+    listen_port = static_cast<uint16_t>(port);
+}
+
+PeerInfo Interface::localPeer() const { return { local_id, username }; }
+
+std::optional<uint16_t> Interface::savedPort() const { return listen_port; }
+
+// ---- starting ---------------------------------------------------------------
+
+void Interface::start()
+{
+    if (needsSetup()) {
+        printLineError("Finish the first-run setup before starting");
+        return;
+    }
+    startPeerManager(*listen_port);
+}
+
+void Interface::start(int port)
+{
+    if (needsSetup()) {
+        printLineError("Finish the first-run setup before starting");
+        return;
+    }
+    startPeerManager(port);
+}
+
+void Interface::startPeerManager(int port)
 {
 	if (peer_manager && peer_manager->isRunning()) {
         printLineError("PeerManager is already running");
@@ -83,7 +148,7 @@ void Interface::startPeerManager(int port, uint8_t user)
     io_context.restart();
 
     try {
-        auto manager = std::make_unique<PeerManager>(&io_context, user, port, *this);
+        auto manager = std::make_unique<PeerManager>(&io_context, localPeer(), crypto_identity, port, *this);
         peer_manager = std::move(manager);
         network_thread = std::thread([this] {
             try { io_context.run(); }
@@ -107,22 +172,11 @@ void Interface::startPeerManager(int port, uint8_t user)
     }
 }
 
-void Interface::startStorageManager(const std::string& storage_path, std::size_t max_queue)
-{
-    try {
-		auto storage = std::make_unique<StorageManager>(storage_path, max_queue);
-		storage_manager = std::move(storage);
-        printLineSuccess("Storage manager started with path: " + storage_path + " and max queue size: " + std::to_string(max_queue));
-    } catch (const std::exception& e) {
-        printLineError(std::string("Failed to start storage manager: ") + e.what());
-    } catch (...) {
-        printLineError("Failed to start storage manager due to an unknown error");
-    }
-}
+// ---- user actions -----------------------------------------------------------
 
 void Interface::connect(const std::string& address, int port)
 {
-    if (!peer_manager || !peer_manager->isRunning()) { printLineError("Peer manager is not running; use /start <port> <user_id>"); return; }
+    if (!peer_manager || !peer_manager->isRunning()) { printLineError("Peer manager is not running; use /start"); return; }
     if (port < 1 || port > 65535) { printLineError("Port must be between 1 and 65535"); return; }
     peer_manager->connect(address, static_cast<unsigned short>(port));
 }
@@ -131,29 +185,50 @@ void Interface::showPeers()
 {
     if (!peer_manager || !peer_manager->isRunning()) { printLineError("Peer manager is not running"); return; }
     printLine("Connected peers:");
-    for (uint8_t user : peer_manager->showPeers()) printLineIndent(std::to_string(user));
+    for (const PeerId& peer : peer_manager->showPeers())
+        printLineIndent(describePeer(storage(), peer));
 }
 
-bool Interface::peerExists(int user)
+void Interface::showKnownPeers()
 {
-    if (!peer_manager || !peer_manager->isRunning() || user < 0 || user > 255) return false;
-    const auto peers = peer_manager->showPeers();
-    return std::find(peers.begin(), peers.end(), static_cast<uint8_t>(user)) != peers.end();
+    const auto known = storage().getKnownPeers();
+    if (known.empty()) {
+        printLine("No known peers yet");
+        return;
+    }
+
+    std::vector<PeerId> online;
+    if (peer_manager && peer_manager->isRunning())
+        online = peer_manager->showPeers();
+
+    printLine("Known peers:");
+    for (const auto& peer : known) {
+        const bool is_online = std::find(online.begin(), online.end(), peer.id) != online.end();
+        printLineIndent(peer.username + " (" + peer.id.shortHex() + ")  " +
+            (is_online ? "online" : "last seen " + formatTime(peer.last_seen)));
+    }
 }
 
-void Interface::selectPeer(int user)
+bool Interface::peerExists(const PeerId& peer)
+{
+    if (!peer_manager || !peer_manager->isRunning()) return false;
+    const auto peers = peer_manager->showPeers();
+    return std::find(peers.begin(), peers.end(), peer) != peers.end();
+}
+
+void Interface::selectPeer(const PeerId& peer)
 {
     if (!peer_manager || !peer_manager->isRunning()) { printLineError("Peer manager is not running"); return; }
-    peer_manager->selectPeer(user);
-	std::vector<StoredMessage> messages = storage_manager->getMessages(static_cast<uint8_t>(user));
+    peer_manager->selectPeer(peer);
 
-    for (auto msg: messages) {
-        if (msg.outgoing) {
-            printSentMessage(msg.content);
-        } else {
-            printMessage(msg.content, msg.peer_id);
+    try {
+        for (const auto& msg : storage().getMessages(peer)) {
+            if (msg.outgoing) printSentMessage(msg.content);
+            else printMessage(msg.content, msg.peer_id);
         }
-	}
+    } catch (const std::exception& e) {
+        printLineError(std::string("Could not load chat history: ") + e.what());
+    }
 }
 
 void Interface::deselectPeer()
@@ -167,15 +242,16 @@ bool Interface::isStarted() const { return peer_manager && peer_manager->isRunni
 void Interface::write(const std::string& msg)
 {
     if (!peer_manager || !peer_manager->isRunning()) { printLineError("Peer manager is not running"); return; }
-    peer_manager->write(msg);
-	storage_manager->saveMessage(peer_manager->getSelectedPeer(), true, msg);
+    peer_manager->write(msg);       // history is saved in onLocalMessageSent, once it is really queued
 }
 
-void Interface::onPeerManagerStarted(uint16_t port, uint8_t local_id)
+// ---- PeerManager events -----------------------------------------------------
+
+void Interface::onPeerManagerStarted(uint16_t port, const PeerInfo& local)
 {
     printLineSuccess("Peer manager started on port " + std::to_string(port) +
-        " with user ID " + std::to_string(local_id));
-    if (console_interface) console_interface->setOnline(port, local_id);
+        " as " + local.username + " (" + local.id.shortHex() + ")");
+    if (console_interface) console_interface->setOnline(port, local);
 }
 
 void Interface::onPeerManagerError(const asio::error_code& error)
@@ -199,45 +275,72 @@ void Interface::onPeerConnection(bool incoming, const asio::error_code& error)
     }
 }
 
-void Interface::onPeerIdentified(uint8_t peer_id)
+// A peer we know keeps the username we saved the first time; a new peer is remembered.
+void Interface::onPeerIdentified(const PeerInfo& peer)
 {
-    printLineSuccess("Connected to peer " + std::to_string(peer_id));
-    if (console_interface) console_interface->onPeerConnected(peer_id);
+    PeerInfo shown = peer;
+    try {
+        if (const auto known = storage().getKnownPeer(peer.id)) {
+            shown.username = known->username;
+            if (known->username != peer.username)
+                printLine(known->username + " now announces itself as '" + peer.username +
+                    "'; keeping the saved name");
+        }
+        storage().rememberPeer(peer.id, shown.username);    // new peer: saved, known peer: last seen updated
+    } catch (const std::exception& e) {
+        printLineError(std::string("Could not save peer: ") + e.what());
+    }
+
+    printLineSuccess("Connected to " + shown.username + " (" + shown.id.shortHex() + ")");
+    if (console_interface) console_interface->onPeerConnected(shown);
 }
 
-void Interface::onDuplicatePeerConnection(uint8_t peer_id, bool new_connection_kept)
+void Interface::onDuplicatePeerConnection(const PeerId& peer_id, bool new_connection_kept)
 {
     printLine(std::string(new_connection_kept ? "Replaced" : "Rejected") +
-        " duplicate connection to peer " + std::to_string(peer_id));
+        " duplicate connection to " + describePeer(storage(), peer_id));
 }
 
-void Interface::onPeerDisconnected(uint8_t peer_id)
+void Interface::onPeerDisconnected(const PeerId& peer_id)
 {
-    printLine("Peer " + std::to_string(peer_id) + " disconnected");
+    printLine(describePeer(storage(), peer_id) + " disconnected");
     if (console_interface) console_interface->onPeerDisconnected(peer_id);
 }
 
-void Interface::onPeerSessionError(bool identified, uint8_t peer_id,
+void Interface::onPeerSessionError(bool identified, const PeerId& peer_id,
     const asio::error_code& error)
 {
-    const std::string peer = identified ? " with peer " + std::to_string(peer_id) : " before peer identification";
+    const std::string peer = identified
+        ? " with " + describePeer(storage(), peer_id)
+        : " before peer identification";
     printLineError("Session terminated" + peer + ": " + error.message());
 }
 
-void Interface::onPeerMessage(uint8_t peer_id, const std::string& message)
+void Interface::onPeerMessage(const PeerId& peer_id, const std::string& message)
 {
     printMessage(message, peer_id);
-	storage_manager->saveMessage(peer_id, false, message);
+    try {
+        storage().saveMessage(peer_id, false, message);
+    } catch (const std::exception& e) {
+        printLineError(std::string("Could not save message: ") + e.what());
+    }
 }
 
-void Interface::onLocalMessageSent(uint8_t /*local_id*/, const std::string& message)
+void Interface::onLocalMessageSent(const PeerId& peer_id, const std::string& message)
 {
     printSentMessage(message);
+    try {
+        storage().saveMessage(peer_id, true, message);
+    } catch (const std::exception& e) {
+        printLineError(std::string("Could not save message: ") + e.what());
+    }
 }
+
+// ---- console output ---------------------------------------------------------
 
 void Interface::printLine(const std::string& msg) { if (console_interface) console_interface->printLine(msg); }
 void Interface::printLineError(const std::string& msg) { if (console_interface) console_interface->printLineError(msg); }
 void Interface::printLineSuccess(const std::string& msg) { if (console_interface) console_interface->printLineSuccess(msg); }
 void Interface::printLineIndent(const std::string& msg) { if (console_interface) console_interface->printLineIndent(msg); }
-void Interface::printMessage(const std::string& msg, int id) { if (console_interface) console_interface->printMessage(msg, id); }
+void Interface::printMessage(const std::string& msg, const PeerId& id) { if (console_interface) console_interface->printMessage(msg, id); }
 void Interface::printSentMessage(const std::string& msg) { if (console_interface) console_interface->printSentMessage(msg); }

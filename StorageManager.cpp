@@ -56,6 +56,50 @@ std::int64_t currentUnixMilliseconds()
     return std::chrono::duration_cast<std::chrono::milliseconds>(now).count();
 }
 
+void bindPeerId(sqlite3* db, sqlite3_stmt* stmt, int index, const PeerId& id)
+{
+    checkSqlite(db, "Binding peer id",
+                sqlite3_bind_blob(stmt, index, id.bytes().data(),
+                                  static_cast<int>(PeerId::kSize), SQLITE_TRANSIENT));
+}
+
+PeerId columnPeerId(sqlite3_stmt* stmt, int index)
+{
+    const void* data = sqlite3_column_blob(stmt, index);
+    const auto id = PeerId::fromBytes(data, static_cast<std::size_t>(sqlite3_column_bytes(stmt, index)));
+    if (!id) {
+        throw std::runtime_error("Stored peer id is corrupted");
+    }
+    return *id;
+}
+
+std::string columnText(sqlite3_stmt* stmt, int index)
+{
+    const auto* text = reinterpret_cast<const char*>(sqlite3_column_text(stmt, index));
+    const int size = sqlite3_column_bytes(stmt, index);
+    return (text && size > 0) ? std::string(text, static_cast<std::size_t>(size)) : std::string();
+}
+
+void execSql(sqlite3* db, const std::string& sql, const char* operation)
+{
+    char* error_message = nullptr;
+    const int result = sqlite3_exec(db, sql.c_str(), nullptr, nullptr, &error_message);
+    if (result != SQLITE_OK) {
+        const std::string detail = error_message ? error_message : sqlite3_errmsg(db);
+        sqlite3_free(error_message);
+        throw std::runtime_error(std::string(operation) + ": " + detail);
+    }
+}
+
+// First column of the first row, or 0 when there is no row.
+int scalarInt(sqlite3* db, const char* sql)
+{
+    Statement statement(db, sql);
+    return sqlite3_step(statement.get()) == SQLITE_ROW ? sqlite3_column_int(statement.get(), 0) : 0;
+}
+
+constexpr int kSchemaVersion = 2;   // 1 = 8-bit peer ids, 2 = 256-bit ids + settings + known peers
+
 } // namespace
 
 StorageManager::StorageManager(const std::string& database_path,
@@ -112,25 +156,45 @@ StorageManager::~StorageManager()
 
 void StorageManager::createTables()
 {
-    static constexpr char sql[] =
+    // Version 1 stored peers as a single byte. Its history cannot be mapped to 256-bit ids,
+    // so the old table is kept under another name instead of being deleted.
+    std::string sql = "BEGIN;";
+    if (scalarInt(db_, "PRAGMA user_version;") < kSchemaVersion &&
+        scalarInt(db_, "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='messages';") > 0) {
+        sql += "ALTER TABLE messages RENAME TO messages_v1;";
+    }
+
+    sql +=
         "CREATE TABLE IF NOT EXISTS messages ("
         "id INTEGER PRIMARY KEY AUTOINCREMENT,"
-        "peer_id INTEGER NOT NULL CHECK(peer_id BETWEEN 0 AND 255),"
+        "peer_id BLOB NOT NULL CHECK(length(peer_id) = 32),"
         "outgoing INTEGER NOT NULL CHECK(outgoing IN (0, 1)),"
         "timestamp INTEGER NOT NULL,"
         "content TEXT NOT NULL"
-        ");";
+        ");"
+        "CREATE INDEX IF NOT EXISTS idx_messages_peer ON messages(peer_id, timestamp, id);"
+        "CREATE TABLE IF NOT EXISTS settings ("
+        "key TEXT PRIMARY KEY,"
+        "value TEXT NOT NULL"
+        ");"
+        "CREATE TABLE IF NOT EXISTS known_peers ("
+        "peer_id BLOB PRIMARY KEY CHECK(length(peer_id) = 32),"
+        "username TEXT NOT NULL,"
+        "first_seen INTEGER NOT NULL,"
+        "last_seen INTEGER NOT NULL"
+        ");"
+        "PRAGMA user_version = " + std::to_string(kSchemaVersion) + ";"
+        "COMMIT;";
 
-    char* error_message = nullptr;
-    const int result = sqlite3_exec(db_, sql, nullptr, nullptr, &error_message);
-    if (result != SQLITE_OK) {
-        const std::string detail = error_message ? error_message : sqlite3_errmsg(db_);
-        sqlite3_free(error_message);
-        throw std::runtime_error("Creating messages table: " + detail);
+    try {
+        execSql(db_, sql, "Creating tables");
+    } catch (...) {
+        sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
+        throw;
     }
 }
 
-void StorageManager::saveMessage(std::uint8_t peer_id, bool outgoing, const std::string& content)
+void StorageManager::saveMessage(const PeerId& peer_id, bool outgoing, const std::string& content)
 {
     StoredMessage message;
     message.peer_id = peer_id;
@@ -174,7 +238,7 @@ void StorageManager::flush()
     }
 }
 
-std::vector<StoredMessage> StorageManager::getMessages(std::uint8_t peer_id)
+std::vector<StoredMessage> StorageManager::getMessages(const PeerId& peer_id)
 {
     flush();
 
@@ -185,14 +249,14 @@ std::vector<StoredMessage> StorageManager::getMessages(std::uint8_t peer_id)
     std::lock_guard<std::mutex> database_lock(database_mutex_);
     Statement statement(db_, sql);
     sqlite3_stmt* stmt = statement.get();
-    checkSqlite(db_, "Binding peer id", sqlite3_bind_int(stmt, 1, peer_id));
+    bindPeerId(db_, stmt, 1, peer_id);
 
     std::vector<StoredMessage> messages;
     int result = SQLITE_OK;
     while ((result = sqlite3_step(stmt)) == SQLITE_ROW) {
         StoredMessage message;
         message.id = sqlite3_column_int64(stmt, 0);
-        message.peer_id = static_cast<std::uint8_t>(sqlite3_column_int(stmt, 1));
+        message.peer_id = columnPeerId(stmt, 1);
         message.outgoing = sqlite3_column_int(stmt, 2) != 0;
         message.timestamp = sqlite3_column_int64(stmt, 3);
 
@@ -263,7 +327,7 @@ void StorageManager::writeMessage(const StoredMessage& message)
     Statement statement(db_, sql);
     sqlite3_stmt* stmt = statement.get();
 
-    checkSqlite(db_, "Binding peer id", sqlite3_bind_int(stmt, 1, message.peer_id));
+    bindPeerId(db_, stmt, 1, message.peer_id);
     checkSqlite(db_, "Binding direction", sqlite3_bind_int(stmt, 2, message.outgoing ? 1 : 0));
     checkSqlite(db_, "Binding timestamp", sqlite3_bind_int64(stmt, 3, message.timestamp));
     checkSqlite(db_, "Binding message content",
@@ -274,4 +338,115 @@ void StorageManager::writeMessage(const StoredMessage& message)
     if (result != SQLITE_DONE) {
         throwSqliteError(db_, "Saving message", result);
     }
+}
+
+// ---- settings --------------------------------------------------------------
+
+std::optional<std::string> StorageManager::getSetting(const std::string& key)
+{
+    std::lock_guard<std::mutex> database_lock(database_mutex_);
+    Statement statement(db_, "SELECT value FROM settings WHERE key = ?;");
+    sqlite3_stmt* stmt = statement.get();
+    checkSqlite(db_, "Binding setting key",
+                sqlite3_bind_text(stmt, 1, key.data(), static_cast<int>(key.size()), SQLITE_TRANSIENT));
+
+    const int result = sqlite3_step(stmt);
+    if (result == SQLITE_ROW) {
+        return columnText(stmt, 0);
+    }
+    if (result != SQLITE_DONE) {
+        throwSqliteError(db_, "Loading setting", result);
+    }
+    return std::nullopt;
+}
+
+void StorageManager::setSetting(const std::string& key, const std::string& value)
+{
+    std::lock_guard<std::mutex> database_lock(database_mutex_);
+    Statement statement(db_,
+        "INSERT INTO settings (key, value) VALUES (?, ?) "
+        "ON CONFLICT(key) DO UPDATE SET value = excluded.value;");
+    sqlite3_stmt* stmt = statement.get();
+    checkSqlite(db_, "Binding setting key",
+                sqlite3_bind_text(stmt, 1, key.data(), static_cast<int>(key.size()), SQLITE_TRANSIENT));
+    checkSqlite(db_, "Binding setting value",
+                sqlite3_bind_text(stmt, 2, value.data(), static_cast<int>(value.size()), SQLITE_TRANSIENT));
+
+    const int result = sqlite3_step(stmt);
+    if (result != SQLITE_DONE) {
+        throwSqliteError(db_, "Saving setting", result);
+    }
+}
+
+// ---- known peers -----------------------------------------------------------
+
+void StorageManager::rememberPeer(const PeerId& id, const std::string& username)
+{
+    const std::int64_t now = currentUnixMilliseconds();
+
+    std::lock_guard<std::mutex> database_lock(database_mutex_);
+    Statement statement(db_,
+        "INSERT INTO known_peers (peer_id, username, first_seen, last_seen) VALUES (?, ?, ?, ?) "
+        "ON CONFLICT(peer_id) DO UPDATE SET last_seen = excluded.last_seen;");
+    sqlite3_stmt* stmt = statement.get();
+    bindPeerId(db_, stmt, 1, id);
+    checkSqlite(db_, "Binding username",
+                sqlite3_bind_text(stmt, 2, username.data(), static_cast<int>(username.size()), SQLITE_TRANSIENT));
+    checkSqlite(db_, "Binding first seen", sqlite3_bind_int64(stmt, 3, now));
+    checkSqlite(db_, "Binding last seen", sqlite3_bind_int64(stmt, 4, now));
+
+    const int result = sqlite3_step(stmt);
+    if (result != SQLITE_DONE) {
+        throwSqliteError(db_, "Saving known peer", result);
+    }
+}
+
+namespace {
+
+KnownPeer readKnownPeer(sqlite3_stmt* stmt)
+{
+    KnownPeer peer;
+    peer.id = columnPeerId(stmt, 0);
+    peer.username = columnText(stmt, 1);
+    peer.first_seen = sqlite3_column_int64(stmt, 2);
+    peer.last_seen = sqlite3_column_int64(stmt, 3);
+    return peer;
+}
+
+} // namespace
+
+std::optional<KnownPeer> StorageManager::getKnownPeer(const PeerId& id)
+{
+    std::lock_guard<std::mutex> database_lock(database_mutex_);
+    Statement statement(db_,
+        "SELECT peer_id, username, first_seen, last_seen FROM known_peers WHERE peer_id = ?;");
+    sqlite3_stmt* stmt = statement.get();
+    bindPeerId(db_, stmt, 1, id);
+
+    const int result = sqlite3_step(stmt);
+    if (result == SQLITE_ROW) {
+        return readKnownPeer(stmt);
+    }
+    if (result != SQLITE_DONE) {
+        throwSqliteError(db_, "Loading known peer", result);
+    }
+    return std::nullopt;
+}
+
+std::vector<KnownPeer> StorageManager::getKnownPeers()
+{
+    std::lock_guard<std::mutex> database_lock(database_mutex_);
+    Statement statement(db_,
+        "SELECT peer_id, username, first_seen, last_seen FROM known_peers ORDER BY last_seen DESC;");
+    sqlite3_stmt* stmt = statement.get();
+
+    std::vector<KnownPeer> peers;
+    int result = SQLITE_OK;
+    while ((result = sqlite3_step(stmt)) == SQLITE_ROW) {
+        peers.push_back(readKnownPeer(stmt));
+    }
+    if (result != SQLITE_DONE) {
+        throwSqliteError(db_, "Loading known peers", result);
+    }
+    return peers;
 }

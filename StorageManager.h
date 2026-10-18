@@ -5,20 +5,31 @@
 #include <cstdint>
 #include <exception>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <thread>
 #include <vector>
 #include <deque>
 
+#include "PeerId.h"
+
 struct sqlite3;
 
 struct StoredMessage {
     std::int64_t id = 0;
-    std::uint8_t peer_id = 0;
+    PeerId peer_id;
     bool outgoing = false;
     // Unix time in milliseconds (UTC).
     std::int64_t timestamp = 0;
     std::string content;
+};
+
+// A peer we have talked to before.
+struct KnownPeer {
+    PeerId id;
+    std::string username;
+    std::int64_t first_seen = 0;   // Unix time in milliseconds (UTC)
+    std::int64_t last_seen = 0;
 };
 
 class StorageManager {
@@ -32,17 +43,36 @@ public:
     StorageManager(StorageManager&&) = delete;
     StorageManager& operator=(StorageManager&&) = delete;
 
+    // ---- chat history --------------------------------------------------------
+
     // Enqueues a message for the SQLite writer thread. Blocks when the bounded
     // queue is full, applying backpressure instead of dropping chat messages.
     // A successful return means queued, not yet durable on disk.
-    void saveMessage(std::uint8_t peer_id, bool outgoing, const std::string& content);
+    void saveMessage(const PeerId& peer_id, bool outgoing, const std::string& content);
 
     // Waits for all messages queued before this call to finish writing.
     // Throws std::runtime_error if the writer has encountered a SQLite error.
     void flush();
 
     // Flushes pending writes before loading the requested peer's history.
-    std::vector<StoredMessage> getMessages(std::uint8_t peer_id);
+    std::vector<StoredMessage> getMessages(const PeerId& peer_id);
+
+    // ---- settings (identity, username, port, ...) -----------------------------
+    // Written synchronously: they are tiny and must be durable immediately.
+
+    std::optional<std::string> getSetting(const std::string& key);
+    void setSetting(const std::string& key, const std::string& value);
+
+    // ---- known peers -----------------------------------------------------------
+
+    // Records that `id` was seen now. The first username stored for an id is kept;
+    // later calls only refresh last_seen.
+    void rememberPeer(const PeerId& id, const std::string& username);
+
+    std::optional<KnownPeer> getKnownPeer(const PeerId& id);
+
+    // most recently seen first
+    std::vector<KnownPeer> getKnownPeers();
 
 private:
     struct QueuedMessage {
@@ -66,7 +96,7 @@ private:
     std::uint64_t first_failed_sequence_ = 0;
     std::exception_ptr first_writer_error_;
 
-    // Serializes SQLite access between the writer and history-loading caller.
+    // Serializes SQLite access between the writer and every other caller.
     std::mutex database_mutex_;
 
     void createTables();

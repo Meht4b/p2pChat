@@ -1,7 +1,10 @@
 #include "Message.h"
 
+#include <algorithm>
 #include <cstring>
 #include <stdexcept>
+
+#include "TextSanitizer.h"
 
 namespace {
 bool validType(MessageType type)
@@ -38,4 +41,37 @@ Message deserialize(const std::vector<char>& data)
     const auto type = static_cast<MessageType>(static_cast<uint8_t>(data[4]));
     if (!validType(type)) throw std::runtime_error("Unknown message type");
     return {type, std::vector<char>(data.begin() + 5, data.end())};
+}
+
+Message makeHandshake(const PeerInfo& info)
+{
+    if (info.username.empty() || info.username.size() > kMaxUsernameBytes)
+        throw std::invalid_argument("Username must be 1.." + std::to_string(kMaxUsernameBytes) + " bytes");
+
+    std::vector<char> body;
+    body.reserve(PeerId::kSize + info.username.size());
+    body.insert(body.end(), info.id.bytes().begin(), info.id.bytes().end());
+    body.insert(body.end(), info.username.begin(), info.username.end());
+    return { MessageType::Handshake, std::move(body) };
+}
+
+bool parseHandshake(const std::vector<char>& body, PeerInfo& out)
+{
+    if (body.size() <= PeerId::kSize || body.size() > PeerId::kSize + kMaxUsernameBytes)
+        return false;
+
+    const auto id = PeerId::fromBytes(body.data(), PeerId::kSize);
+    if (!id || id->isZero())
+        return false;
+
+    std::string name = sanitizeText(std::string(body.begin() + PeerId::kSize, body.end()));
+    const auto first = name.find_first_not_of(' ');
+    if (first == std::string::npos)
+        return false;                                   // empty after cleaning
+    name = name.substr(first, name.find_last_not_of(' ') - first + 1);
+    std::replace(name.begin(), name.end(), ' ', '_');   // keeps names single-token for /selectpeer
+
+    out.id = *id;
+    out.username = std::move(name);
+    return true;
 }

@@ -247,7 +247,19 @@
             "c:\\cpplib\\asio-1.36.0\\include\\asio\\detail\\push_options.hpp",
             "c:\\cpplib\\asio-1.36.0\\include\\asio\\detail\\pop_options.hpp",
             "c:\\cpplib\\asio-1.36.0\\include\\asio\\detail\\push_options.hpp",
-            "c:\\cpplib\\asio-1.36.0\\include\\asio\\detail\\pop_options.hpp"
+            "c:\\cpplib\\asio-1.36.0\\include\\asio\\detail\\pop_options.hpp",
+            "c:\\users\\mehth\\source\\repos\\p2pchat\\p2pchat\\peerid.h",
+            "c:\\program files\\microsoft visual studio\\2022\\community\\vc\\tools\\msvc\\14.44.35207\\include\\array",
+            "c:\\program files\\microsoft visual studio\\2022\\community\\vc\\tools\\msvc\\14.44.35207\\include\\functional",
+            "c:\\program files\\microsoft visual studio\\2022\\community\\vc\\tools\\msvc\\14.44.35207\\include\\unordered_map",
+            "c:\\program files\\microsoft visual studio\\2022\\community\\vc\\tools\\msvc\\14.44.35207\\include\\xhash",
+            "c:\\program files\\microsoft visual studio\\2022\\community\\vc\\tools\\msvc\\14.44.35207\\include\\cmath",
+            "c:\\program files\\microsoft visual studio\\2022\\community\\vc\\tools\\msvc\\14.44.35207\\include\\list",
+            "c:\\program files\\microsoft visual studio\\2022\\community\\vc\\tools\\msvc\\14.44.35207\\include\\vector",
+            "c:\\program files\\microsoft visual studio\\2022\\community\\vc\\tools\\msvc\\14.44.35207\\include\\__msvc_bit_utils.hpp",
+            "c:\\program files\\microsoft visual studio\\2022\\community\\vc\\tools\\msvc\\14.44.35207\\include\\xbit_ops.h",
+            "c:\\program files\\microsoft visual studio\\2022\\community\\vc\\tools\\msvc\\14.44.35207\\include\\xnode_handle.h",
+            "c:\\program files\\microsoft visual studio\\2022\\community\\vc\\tools\\msvc\\14.44.35207\\include\\string_view"
         ],
         "ImportedModules": [],
         "ImportedHeaderUnits": []

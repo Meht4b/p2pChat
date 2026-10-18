@@ -1,11 +1,14 @@
 #pragma once
 
 #include <memory>
+#include <optional>
 #include <string>
 #include <asio.hpp>
 #include <thread>
 #include <cstdint>
 #include "PeerManagerCallbackHandler.h"
+#include "PeerId.h"
+#include "CryptoIdentity.h"
 #include "StorageManager.h"
 
 class PeerManager;
@@ -20,6 +23,14 @@ private:
     std::thread network_thread;
 	std::unique_ptr<StorageManager> storage_manager;
 
+    // who we are; loaded by initialize()
+    PeerId local_id;
+    CryptoIdentity crypto_identity;
+    std::string username;                   // empty until the first-run setup is done
+    std::optional<uint16_t> listen_port;    // empty until the first-run setup is done
+
+    StorageManager& storage();
+
 public:
     Interface();
     ~Interface();
@@ -30,12 +41,25 @@ public:
 	// Sets the console interface for output and user interaction.
     void setConsole(ConsoleInterface* console_interface);
 
-	// Starts the peer manager on the specified port with the given user ID and the storagemanager.
-    void start(int port, uint8_t user);
+    //opens the local database, loads the identity (creating it on the very first run)
+    //and the saved username / port. Throws on failure; must be called before anything else.
+    void initialize(const std::string& storage_path = "storage.db");
 
-    void startPeerManager(int port, uint8_t user);
+    //false until a username and port have been saved (first run)
+    bool needsSetup() const;
 
-    void startStorageManager(const std::string& storage_path, std::size_t max_queue);
+    //validates and saves the first-run settings. Throws std::invalid_argument on bad input.
+    void saveProfile(const std::string& new_username, int port);
+
+    //our own id and username
+    PeerInfo localPeer() const;
+    std::optional<uint16_t> savedPort() const;
+
+	// Starts the peer manager on the saved port, or on `port` if given.
+    void start();
+    void start(int port);
+
+    void startPeerManager(int port);
 
 	//returns if peermanager has started and is running
     bool isStarted() const;
@@ -45,7 +69,7 @@ public:
     void printLineSuccess(const std::string& message);
     void printLineError(const std::string& message);
     void printLineIndent(const std::string& message);
-	void printMessage(const std::string& message, int user_id);
+	void printMessage(const std::string& message, const PeerId& peer_id);
     void printSentMessage(const std::string& message);
 
 	//-------------------------------- PeerManager operations ------------------------
@@ -56,11 +80,14 @@ public:
 	// Shows the list of connected peers.
     void showPeers();
 
-    //checks if peer exists
-    bool peerExists(int user);
+    // Shows every peer we have talked to before.
+    void showKnownPeers();
+
+    //checks if peer is connected
+    bool peerExists(const PeerId& peer);
 
     //selects peer
-    void selectPeer(int user);
+    void selectPeer(const PeerId& peer);
 
     //deselects peer
     void deselectPeer();
@@ -70,30 +97,30 @@ public:
 
 	// ----------------- PeerManagerCallbackHandler overrides -----------------
 
-    //returns the user id and port
-    void onPeerManagerStarted(uint16_t port, uint8_t local_id) override;
+    //called once the listening socket is up
+    void onPeerManagerStarted(uint16_t port, const PeerInfo& local) override;
 
     //handles errors
     void onPeerManagerError(const asio::error_code& error) override;
     void onPeerOperationError(const asio::error_code& error) override;
-    void onPeerSessionError(bool identified, uint8_t peer_id,const asio::error_code& error) override;
+    void onPeerSessionError(bool identified, const PeerId& peer_id, const asio::error_code& error) override;
 
 	//when a connection is established , either incoming or outgoing, this callback is invoked
     void onPeerConnection(bool incoming, const asio::error_code& error) override;
 
 	//when handshake is successful and peer is identified, this callback is invoked
-    void onPeerIdentified(uint8_t peer_id) override;
+    void onPeerIdentified(const PeerInfo& peer) override;
 
     //when duplicate connection occurs
-    void onDuplicatePeerConnection(uint8_t peer_id, bool new_connection_kept) override;
+    void onDuplicatePeerConnection(const PeerId& peer_id, bool new_connection_kept) override;
 
     //when peer disconnects
-    void onPeerDisconnected(uint8_t peer_id) override;
+    void onPeerDisconnected(const PeerId& peer_id) override;
 
 	//when a message is received from a peer
-    void onPeerMessage(uint8_t peer_id, const std::string& message) override;
+    void onPeerMessage(const PeerId& peer_id, const std::string& message) override;
 
 	//when a message is sent to a peer
-    void onLocalMessageSent(uint8_t local_id, const std::string& message) override;
+    void onLocalMessageSent(const PeerId& peer_id, const std::string& message) override;
 
 };

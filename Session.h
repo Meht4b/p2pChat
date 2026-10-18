@@ -1,6 +1,7 @@
 #pragma once
 
 #include <asio.hpp>
+#include <asio/ssl.hpp>
 #include <cstdint>
 #include <deque>
 #include <memory>
@@ -8,6 +9,7 @@
 #include <array>
 
 #include "Message.h"
+#include "PeerId.h"
 #include "SessionCallbackHandler.h"
 
 
@@ -25,14 +27,15 @@ class Session : public std::enable_shared_from_this<Session>
 {
 private:
 	//the socket
-	asio::ip::tcp::socket socket;
+	asio::ssl::stream<asio::ip::tcp::socket> socket;
 
 	//read and write queues
 	std::deque<std::vector<char>> write_queue;
 	std::deque<Message> read_queue;
 	
-	//session ids
-	uint8_t local_id,remote_id;
+	//who we are (id + username sent in the handshake) and who the remote side is
+	PeerInfo local;
+	PeerId remote_id;
 	
 	//callback handler
 	SessionCallbackHandler* session_callback;
@@ -50,10 +53,12 @@ private:
 
 	bool closed = false;
 	bool handshake_complete = false;
+	bool handshake_requested = false;
+	PeerId tls_peer_id;
 
 
 public:
-	Session(asio::ip::tcp::socket socket, uint8_t local_id, SessionCallbackHandler* session_callback, ConnectionDirection direction);
+	Session(asio::ssl::stream<asio::ip::tcp::socket> socket, PeerInfo local, SessionCallbackHandler* session_callback, ConnectionDirection direction);
 
 	void start();
 
@@ -74,6 +79,7 @@ private:
 
 	//reads the length of the incoming message and then calls the readBody function
 	void readLength();
+	void onTlsReady(const asio::error_code& error);
 
 	//reads the body and then creates an async loop by calling readLength function again also calls the processMessage function
 	void readBody();
@@ -85,7 +91,7 @@ private:
 	void flushWriteQueue();
 
 	//handles the handshake and calls the SessionCallbackHandler to store the current session in the map
-	void handleHandshake(uint8_t remote_id);
+	void handleHandshake(const PeerInfo& remote);
 
 	void handleDisconnect();
 
