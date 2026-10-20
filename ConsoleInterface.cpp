@@ -169,8 +169,7 @@ namespace
     Element renderTitle(const ConsoleStatus& status)
     {
         Elements row = {
-            text("p2p") | bold | color(kAccent),
-            text(" chat") | bold,
+            text("nullnet") | bold | color(kAccent),
         };
 
         if (status.selected_peer)
