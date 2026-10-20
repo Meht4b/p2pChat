@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <map>
@@ -56,6 +57,8 @@ struct ConsoleSnapshot
 {
     std::vector<LogEntry> log;
     ConsoleStatus status;
+    std::size_t log_start = 0;
+    std::size_t visible_log_count = 1;
 };
 
 class ConsoleInterface
@@ -104,6 +107,7 @@ private:
     // input handling (UI thread)
     void handleInput(const std::string& line);
     void runCommand(const std::string& command_line);
+    bool navigateCommandHistory(int direction);
     const Command* findCommand(const std::string& name) const;
     std::vector<std::string> commandUsages() const;
 
@@ -114,6 +118,7 @@ private:
     bool leavePeer(std::istringstream& args);
     void showHelp();
     void clearLog();
+    void scrollLog(int amount);
 
     // state access
     void append(LogEntry entry);
@@ -122,7 +127,7 @@ private:
     bool hasSelectedPeer() const;
     std::string peerName(const PeerId& peer_id) const;
     PeerLookup resolvePeer(const std::string& token, PeerId& out) const;
-    ConsoleSnapshot snapshot() const;
+    ConsoleSnapshot snapshot(std::size_t terminal_height);
     void setRedraw(std::function<void()> redraw);
     void redrawLocked() const;      // caller must hold state_mutex
 
@@ -130,6 +135,9 @@ private:
     std::string input;
     std::string placeholder;                // input hint, depends on mode
     std::vector<Command> commands;
+    std::vector<std::string> command_history;
+    std::size_t command_history_position = 0;
+    std::string command_history_draft;
 
     // UI thread only
     InputMode mode = InputMode::Command;
@@ -138,6 +146,9 @@ private:
     // guarded by state_mutex (shared with the network thread)
     mutable std::mutex state_mutex;
     std::vector<LogEntry> output;
+    std::size_t log_start = 0;
+    std::size_t visible_log_count = 1;
+    bool follow_log_tail = true;
     ConsoleStatus status;
     std::function<void()> request_redraw;
 };

@@ -92,9 +92,11 @@ namespace
         case LogLevel::Command:
             return { ">", kAccent, Color::Default, true };
         case LogLevel::Incoming:
-            return { truncate(entry.sender, kTagWidth - 1), kChat, Color::Default, false };
+            // Keep peer text bright white; our own text uses a darker neutral
+            // gray so the two directions are easy to distinguish.
+            return { truncate(entry.sender, kTagWidth - 1), kChat, Color::White, false };
         case LogLevel::Outgoing:
-            return { "you", Color::BlueLight, Color::Default, false };
+            return { "you", Color::BlueLight, Color::GrayDark, false };
         case LogLevel::Info:
         default:
             return { "..", Color::GrayLight, Color::Default, false };
@@ -130,21 +132,35 @@ namespace
         });
     }
 
-    Element renderLog(const std::vector<LogEntry>& log, const ConsoleStatus& status)
+    Element renderLog(const std::vector<LogEntry>& log,
+                      const ConsoleStatus& status,
+                      std::size_t start,
+                      std::size_t visible_count)
     {
+        const std::size_t end = std::min(log.size(), start + visible_count);
         Elements rows;
-        for (const auto& entry : log)
-            rows.push_back(renderEntry(entry));
+        for (std::size_t i = start; i < end; ++i)
+            rows.push_back(renderEntry(log[i]));
 
         if (rows.empty())
             rows.push_back(text("nothing yet") | dim);
-        else
-            rows.back() = rows.back() | focus;      // pin the view to the newest line
+
+        const bool more_above = start > 0;
+        const bool more_below = end < log.size();
+        Element messages = vbox(std::move(rows)) | flex;
+        const std::string scroll_state = more_above && more_below ? "^v"
+            : more_above ? "^" : more_below ? "v" : "";
+        const std::string scroll_hint = status.selected_peer
+            ? "Ctrl+P/N scroll; PgUp/PgDn page; Up/Down history"
+            : "";
 
         return vbox({
             renderLogHeader(status),
-            text(""),
-            vbox(std::move(rows)) | yframe | flex,
+            hbox({
+                filler(),
+                text(scroll_state + (scroll_state.empty() || scroll_hint.empty() ? "" : "  ") + scroll_hint) | dim,
+            }),
+            std::move(messages),
         }) | flex;
     }
 
@@ -289,7 +305,8 @@ namespace
                        Element input_field)
     {
         Element body = hbox({
-            renderLog(snapshot.log, snapshot.status),
+            renderLog(snapshot.log, snapshot.status,
+                      snapshot.log_start, snapshot.visible_log_count),
             text("    "),
             renderSidebar(snapshot.status, usages),
         }) | flex;
@@ -459,11 +476,46 @@ void ConsoleInterface::handleInput(const std::string& line)
         return;
 
     if (line.front() == '/')
+    {
+        command_history.push_back(line);
+        command_history_position = command_history.size();
+        command_history_draft.clear();
         runCommand(line.substr(1));
+    }
     else if (hasSelectedPeer())
         interface.write(line);
     else
         printLineError("No peer selected: use /selectpeer <name|id>");
+
+    command_history_position = command_history.size();
+    command_history_draft.clear();
+}
+
+bool ConsoleInterface::navigateCommandHistory(int direction)
+{
+    if (mode != InputMode::Command || command_history.empty())
+        return false;
+
+    if (direction < 0)
+    {
+        if (command_history_position == command_history.size())
+            command_history_draft = input;
+        if (command_history_position > 0)
+            --command_history_position;
+    }
+    else if (command_history_position < command_history.size())
+    {
+        ++command_history_position;
+    }
+    else
+    {
+        return true;
+    }
+
+    input = command_history_position == command_history.size()
+        ? command_history_draft
+        : command_history[command_history_position];
+    return true;
 }
 
 void ConsoleInterface::runCommand(const std::string& command_line)
@@ -607,6 +659,32 @@ void ConsoleInterface::clearLog()
 {
     std::lock_guard<std::mutex> lock(state_mutex);
     output.clear();
+    log_start = 0;
+    follow_log_tail = true;
+    redrawLocked();
+}
+
+void ConsoleInterface::scrollLog(int amount)
+{
+    std::lock_guard<std::mutex> lock(state_mutex);
+    if (output.empty())
+        return;
+
+    const std::size_t max_start = output.size() > visible_log_count
+        ? output.size() - visible_log_count
+        : 0;
+
+    if (amount < 0) {
+        const std::size_t distance = static_cast<std::size_t>(-amount);
+        log_start = log_start > distance ? log_start - distance : 0;
+    } else {
+        const std::size_t distance = static_cast<std::size_t>(amount);
+        log_start = distance > max_start - std::min(log_start, max_start)
+            ? max_start
+            : std::min(log_start, max_start) + distance;
+    }
+
+    follow_log_tail = log_start >= max_start;
     redrawLocked();
 }
 
@@ -616,6 +694,10 @@ void ConsoleInterface::append(LogEntry entry)
 {
     std::lock_guard<std::mutex> lock(state_mutex);
     output.push_back(std::move(entry));
+    if (follow_log_tail)
+        log_start = output.size() > visible_log_count
+            ? output.size() - visible_log_count
+            : 0;
     redrawLocked();
 }
 
@@ -664,10 +746,20 @@ ConsoleInterface::PeerLookup ConsoleInterface::resolvePeer(const std::string& to
     return PeerLookup::Found;
 }
 
-ConsoleSnapshot ConsoleInterface::snapshot() const
+ConsoleSnapshot ConsoleInterface::snapshot(std::size_t terminal_height)
 {
     std::lock_guard<std::mutex> lock(state_mutex);
-    return { output, status };
+    // The page reserves six terminal rows for the title, prompt, and spacing;
+    // the log header and its key hint use two more.
+    visible_log_count = terminal_height > 8 ? terminal_height - 8 : 1;
+    const std::size_t max_start = output.size() > visible_log_count
+        ? output.size() - visible_log_count
+        : 0;
+    if (log_start > max_start)
+        log_start = max_start;
+    if (log_start >= max_start)
+        follow_log_tail = true;
+    return { output, status, log_start, visible_log_count };
 }
 
 void ConsoleInterface::setRedraw(std::function<void()> redraw)
@@ -693,9 +785,35 @@ void ConsoleInterface::run()
     auto input_field = makeInput(&input, &placeholder,
         [this](const std::string& line) { handleInput(line); });
 
+    input_field = CatchEvent(input_field, [this, &screen](Event event)
+    {
+        if (event == Event::CtrlP || event == Event::ArrowUpCtrl) {
+            scrollLog(-1);
+            return true;
+        }
+        if (event == Event::CtrlN || event == Event::ArrowDownCtrl) {
+            scrollLog(1);
+            return true;
+        }
+        if (event == Event::ArrowUp && navigateCommandHistory(-1))
+            return true;
+        if (event == Event::ArrowDown && navigateCommandHistory(1))
+            return true;
+        if (event == Event::PageUp) {
+            scrollLog(-std::max(1, screen.dimy() - 8));
+            return true;
+        }
+        if (event == Event::PageDown) {
+            scrollLog(std::max(1, screen.dimy() - 8));
+            return true;
+        }
+        return false;
+    });
+
     auto page = Renderer(input_field, [&]
     {
-        return renderPage(snapshot(), commandUsages(), mode, input_field->Render());
+        const auto current = snapshot(static_cast<std::size_t>(std::max(0, screen.dimy())));
+        return renderPage(current, commandUsages(), mode, input_field->Render());
     });
 
     setRedraw([&screen] { screen.PostEvent(Event::Custom); });

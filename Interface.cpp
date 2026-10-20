@@ -282,7 +282,7 @@ void Interface::onPeerConnection(bool incoming, const asio::error_code& error)
         printLineError(std::string(incoming ? "Incoming connection failed: " : "Connection failed: ") +
             error.message());
     } else {
-        printLineSuccess(incoming ? "Incoming connection accepted" : "Connection established");
+        printLineSuccess(incoming ? "Incoming connection accepted" : "Connection attempt started");
     }
 }
 

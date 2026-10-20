@@ -131,7 +131,21 @@ void PeerManager::receive()
     socket.async_receive_from(asio::buffer(receive_buffer), receive_endpoint,
         [this](const asio::error_code& ec, std::size_t bytes) {
             if (ec) {
-                if (ec != asio::error::operation_aborted) fail(ec);
+                if (ec == asio::error::operation_aborted) return;
+
+                // On UDP, an ICMP "port unreachable" response for one peer
+                // can be reported by the shared socket's outstanding receive
+                // (Linux commonly maps it to connection_refused; Windows may
+                // report connection_reset). It only means that destination
+                // did not answer. Keep listening so one failed /connect does
+                // not take down every other peer session.
+                if (ec == asio::error::connection_refused ||
+                    ec == asio::error::connection_reset) {
+                    receive();
+                    return;
+                }
+
+                fail(ec);
                 return;
             }
             const UdpEndpoint source = receive_endpoint;
