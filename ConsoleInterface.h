@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "PeerId.h"
+#include "ConnectionPath.h"
 
 class Interface;
 
@@ -50,6 +51,7 @@ struct ConsoleStatus
     PeerInfo self;                                  // our own id and username
     std::optional<PeerId> selected_peer;            // set while chatting
     std::map<PeerId, std::string> peers;            // connected peers and their display names
+    std::map<PeerId, ConnectionPath> peer_paths;    // active transport path for each peer
 };
 
 // Consistent copy of everything the renderer needs for one frame.
@@ -82,7 +84,8 @@ public:
     // Status updates. Thread-safe.
     void setOnline(uint16_t port, const PeerInfo& self);
     void setOffline();
-    void onPeerConnected(const PeerInfo& peer);
+    void onPeerConnected(const PeerInfo& peer,
+        ConnectionPath path = ConnectionPath::Unknown);
     void onPeerDisconnected(const PeerId& peer_id);
 
 private:

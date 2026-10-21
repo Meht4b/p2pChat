@@ -5,6 +5,7 @@
 #include <juice/juice.h>
 
 #include "RoomProtocol.h"
+#include "ConnectionPath.h"
 
 #include <array>
 #include <atomic>
@@ -19,6 +20,8 @@ class RoomConnection : public std::enable_shared_from_this<RoomConnection> {
 public:
     using UdpEndpoint = asio::ip::udp::endpoint;
     using ReadyHandler = std::function<void(std::shared_ptr<RoomConnection>,
+        UdpEndpoint, UdpEndpoint, bool, ConnectionPath)>;
+    using LegacyReadyHandler = std::function<void(std::shared_ptr<RoomConnection>,
         UdpEndpoint, UdpEndpoint, bool)>;
     using PacketHandler = std::function<void(std::shared_ptr<RoomConnection>,
         std::vector<std::uint8_t>)>;
@@ -27,6 +30,11 @@ public:
     RoomConnection(asio::io_context& io, std::string relay_host,
         std::uint16_t signal_port, std::string room_token,
         ReadyHandler ready, PacketHandler packet, ErrorHandler error);
+    // Compatibility overload for callers compiled against the earlier route-
+    // agnostic readiness callback. New code should use ReadyHandler.
+    RoomConnection(asio::io_context& io, std::string relay_host,
+        std::uint16_t signal_port, std::string room_token,
+        LegacyReadyHandler ready, PacketHandler packet, ErrorHandler error);
     ~RoomConnection();
 
     void start();

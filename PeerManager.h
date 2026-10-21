@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "PeerId.h"
+#include "ConnectionPath.h"
 #include "CryptoIdentity.h"
 #include "RoomConnection.h"
 #include "Session.h"
@@ -35,6 +36,7 @@ private:
         std::shared_ptr<Session> session;
         bool path_ready = false;
         bool quic_client = false;
+        ConnectionPath path = ConnectionPath::Unknown;
     };
 
     std::unordered_map<PeerId, std::shared_ptr<Session>> active_sessions;
@@ -83,7 +85,7 @@ private:
     void removeRoutes(Session* session);
     void fail(const asio::error_code& error) noexcept;
     void onRoomReady(std::shared_ptr<RoomConnection> room, UdpEndpoint local_path,
-        UdpEndpoint remote_path, bool quic_client);
+        UdpEndpoint remote_path, bool quic_client, ConnectionPath path);
     void onRoomDatagram(std::shared_ptr<RoomConnection> room, std::vector<std::uint8_t> packet);
     void onRoomError(std::shared_ptr<RoomConnection> room, std::string error);
     void removeRoomTransport(Session* session);

@@ -17,6 +17,7 @@
 
 #include "Message.h"
 #include "PeerId.h"
+#include "ConnectionPath.h"
 #include "SessionCallbackHandler.h"
 
 enum class ConnectionDirection : bool { Incoming, Outgoing };
@@ -36,7 +37,12 @@ public:
         std::shared_ptr<asio::ssl::context> tls_context, PeerInfo local,
         SessionCallbackHandler* session_callback, ConnectionDirection direction,
         DatagramSender send_datagram, CidRegistrar register_cid,
-        std::optional<UdpEndpoint> local_path_endpoint = std::nullopt);
+        std::optional<UdpEndpoint> local_path_endpoint);
+    Session(asio::ip::udp::socket& socket, UdpEndpoint remote,
+        std::shared_ptr<asio::ssl::context> tls_context, PeerInfo local,
+        SessionCallbackHandler* session_callback, ConnectionDirection direction,
+        DatagramSender send_datagram, CidRegistrar register_cid,
+        std::optional<UdpEndpoint> local_path_endpoint, ConnectionPath connection_path);
     ~Session();
 
     // Outgoing sessions call initiateHandshake() then start(). Incoming
@@ -52,6 +58,7 @@ public:
     void selectPeer();
     void deselectPeer();
     ConnectionDirection getDirection() const;
+    ConnectionPath connectionPath() const { return connection_path_; }
     void close();
 
 private:
@@ -65,6 +72,7 @@ private:
 
     asio::ip::udp::socket& udp_socket_;
     std::optional<UdpEndpoint> local_path_endpoint_;
+    ConnectionPath connection_path_ = ConnectionPath::Unknown;
     UdpEndpoint remote_endpoint_;
     std::shared_ptr<asio::ssl::context> tls_context_;
     std::shared_ptr<asio::steady_timer> expiry_timer_;

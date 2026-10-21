@@ -110,6 +110,16 @@ RoomConnection::RoomConnection(asio::io_context& io, std::string relay_host,
         throw std::runtime_error("Could not configure relay server TLS name");
 }
 
+RoomConnection::RoomConnection(asio::io_context& io, std::string relay_host,
+    std::uint16_t signal_port, std::string room_token, LegacyReadyHandler ready,
+    PacketHandler packet, ErrorHandler error)
+    : RoomConnection(io, std::move(relay_host), signal_port, std::move(room_token),
+        ReadyHandler([ready = std::move(ready)](std::shared_ptr<RoomConnection> room,
+            UdpEndpoint local, UdpEndpoint remote, bool quic_client, ConnectionPath) {
+            if (ready) ready(std::move(room), std::move(local), std::move(remote), quic_client);
+        }), std::move(packet), std::move(error))
+{}
+
 RoomConnection::~RoomConnection()
 {
     close();
@@ -344,6 +354,13 @@ void RoomConnection::maybeReportReady()
         reportError("ICE selected path is unavailable");
         return;
     }
+    std::array<char, JUICE_MAX_SDP_STRING_LEN> local_candidate{};
+    std::array<char, JUICE_MAX_SDP_STRING_LEN> remote_candidate{};
+    if (juice_get_selected_candidates(agent_, local_candidate.data(), local_candidate.size(),
+            remote_candidate.data(), remote_candidate.size()) != JUICE_ERR_SUCCESS) {
+        reportError("ICE selected candidate type is unavailable");
+        return;
+    }
     const auto local_ufrag = iceUfrag(local_description_);
     const auto remote_ufrag = iceUfrag(remote_description_);
     if (!local_ufrag || !remote_ufrag || *local_ufrag == *remote_ufrag) {
@@ -357,12 +374,20 @@ void RoomConnection::maybeReportReady()
         reportError(error.what());
         return;
     }
+    const std::string local_type(local_candidate.data());
+    const std::string remote_type(remote_candidate.data());
+    const bool uses_turn = local_type.find(" typ relay") != std::string::npos ||
+        remote_type.find(" typ relay") != std::string::npos;
+    const ConnectionPath path = uses_turn ? ConnectionPath::Relay
+        : (isLanAddress(local_endpoint_.address()) &&
+            isLanAddress(remote_endpoint_.address())
+            ? ConnectionPath::Lan : ConnectionPath::NatTraversal);
     ready_reported_ = true;
     asio::error_code ignored;
     setup_timeout_.cancel();
     if (ready_handler_)
         ready_handler_(shared_from_this(), local_endpoint_, remote_endpoint_,
-            *local_ufrag < *remote_ufrag);
+            *local_ufrag < *remote_ufrag, path);
 }
 
 void RoomConnection::reportError(std::string message)

@@ -74,7 +74,18 @@ Session::Session(asio::ip::udp::socket& socket, UdpEndpoint remote,
     SessionCallbackHandler* callback, ConnectionDirection direction,
     DatagramSender send_datagram, CidRegistrar register_cid,
     std::optional<UdpEndpoint> local_path_endpoint)
+    : Session(socket, std::move(remote), std::move(tls_context), std::move(local),
+        callback, direction, std::move(send_datagram), std::move(register_cid),
+        std::move(local_path_endpoint), ConnectionPath::Unknown)
+{}
+
+Session::Session(asio::ip::udp::socket& socket, UdpEndpoint remote,
+    std::shared_ptr<asio::ssl::context> tls_context, PeerInfo local,
+    SessionCallbackHandler* callback, ConnectionDirection direction,
+    DatagramSender send_datagram, CidRegistrar register_cid,
+    std::optional<UdpEndpoint> local_path_endpoint, ConnectionPath connection_path)
     : udp_socket_(socket), local_path_endpoint_(std::move(local_path_endpoint)),
+      connection_path_(connection_path),
       remote_endpoint_(std::move(remote)),
       tls_context_(std::move(tls_context)),
       expiry_timer_(std::make_shared<asio::steady_timer>(socket.get_executor())),

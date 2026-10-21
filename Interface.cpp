@@ -289,6 +289,11 @@ void Interface::onPeerConnection(bool incoming, const asio::error_code& error)
 // A peer we know keeps the username we saved the first time; a new peer is remembered.
 void Interface::onPeerIdentified(const PeerInfo& peer)
 {
+    onPeerIdentified(peer, ConnectionPath::Unknown);
+}
+
+void Interface::onPeerIdentified(const PeerInfo& peer, ConnectionPath path)
+{
     PeerInfo shown = peer;
     try {
         if (const auto known = storage().getKnownPeer(peer.id)) {
@@ -303,7 +308,20 @@ void Interface::onPeerIdentified(const PeerInfo& peer)
     }
 
     printLineSuccess("Connected to " + shown.username + " (" + shown.id.shortHex() + ")");
-    if (console_interface) console_interface->onPeerConnected(shown);
+    if (console_interface) console_interface->onPeerConnected(shown, path);
+}
+
+void Interface::onPeerConnectionPathChanged(const PeerId& peer_id, ConnectionPath path)
+{
+    if (!console_interface) return;
+    PeerInfo peer;
+    peer.id = peer_id;
+    try {
+        if (const auto known = storage().getKnownPeer(peer_id))
+            peer.username = known->username;
+    } catch (const std::exception&) {}
+    if (peer.username.empty()) peer.username = peer_id.shortHex();
+    console_interface->onPeerConnected(peer, path);
 }
 
 void Interface::onDuplicatePeerConnection(const PeerId& peer_id, bool new_connection_kept)

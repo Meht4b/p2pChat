@@ -112,6 +112,8 @@ public:
 
 	//when handshake is successful and peer is identified, this callback is invoked
     void onPeerIdentified(const PeerInfo& peer) override;
+    void onPeerIdentified(const PeerInfo& peer, ConnectionPath path) override;
+    void onPeerConnectionPathChanged(const PeerId& peer_id, ConnectionPath path) override;
 
     //when duplicate connection occurs
     void onDuplicatePeerConnection(const PeerId& peer_id, bool new_connection_kept) override;

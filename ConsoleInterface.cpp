@@ -69,6 +69,15 @@ namespace
         }
     }
 
+    std::string routeLabel(const ConsoleStatus& status)
+    {
+        if (!status.selected_peer) return status.online ? "LISTENING" : "OFFLINE";
+        const auto found = status.peer_paths.find(*status.selected_peer);
+        return found == status.peer_paths.end()
+            ? connectionPathLabel(ConnectionPath::Unknown)
+            : connectionPathLabel(found->second);
+    }
+
     // Display name of a peer: its username if we know it, else the short id.
     std::string peerLabel(const ConsoleStatus& status, const PeerId& peer_id)
     {
@@ -152,19 +161,15 @@ namespace
         const std::string title = status.selected_peer
             ? "SESSION / " + peerLabel(status, *status.selected_peer)
             : "ACTIVITY / NODE";
-        const std::string detail = status.selected_peer
-            ? "PEER LINK"
-            : status.online ? "LISTENING" : "OFFLINE";
+        const std::string detail = routeLabel(status);
 
         return vbox({
             panelLabel(title, detail),
             separator() | color(kRule),
             std::move(messages),
             hbox({
-                text(scroll_state.empty() ? " " : scroll_state + "  ") | color(kCoral),
-                text("Ctrl+P/N scroll   PgUp/PgDn page") | color(kMuted),
                 filler(),
-                text("Up/Down history") | color(kMuted),
+                text(scroll_state.empty() ? " " : scroll_state) | color(kCoral),
             }),
         }) | borderStyled(kRule) | bgcolor(kPanel) | flex;
     }
@@ -250,38 +255,25 @@ namespace
         });
     }
 
-    Element renderCommandsSection(const std::vector<std::string>& usages, bool compact)
+    Element renderCommandsSection(const std::vector<std::string>& usages)
     {
-        if (compact)
-        {
-            std::string command_names;
-            for (const auto& usage : usages)
-            {
-                const auto end = usage.find_first_of(" \t|");
-                const std::string command = usage.substr(0, end);
-                if (!command_names.empty())
-                    command_names += "   ";
-                command_names += command.empty() ? usage : command;
-            }
-            return vbox({
-                panelLabel("COMMANDS", "/help for syntax"),
-                paragraph(command_names) | color(kWarm),
-            });
-        }
-
-        Elements items;
+        std::vector<std::string> names;
         for (const auto& usage : usages)
         {
             const auto end = usage.find_first_of(" \t|");
             const std::string command = usage.substr(0, end);
-            items.push_back(hbox({
-                text("/ ") | color(kCoral),
-                text(command.empty() ? usage : command.substr(1)) | color(kWarm),
-            }));
+            names.push_back(command.empty() ? usage : command);
+        }
+        Elements items;
+        for (std::size_t i = 0; i < names.size(); i += 2) {
+            Element left = text(names[i]) | color(kWarm);
+            Element right = i + 1 < names.size()
+                ? text(names[i + 1]) | color(kWarm)
+                : text("");
+            items.push_back(hbox({std::move(left), filler(), std::move(right)}));
         }
         return vbox({
             panelLabel("COMMANDS", "/help for syntax"),
-            text(""),
             vbox(std::move(items)),
         });
     }
@@ -297,18 +289,11 @@ namespace
         {
             if (compact)
             {
-                identity.push_back(hbox({
-                    text(truncate(status.self.username, width >= 32 ? 13 : 9)) | bold | color(kInk),
-                    filler(),
-                    text(status.online ? "UDP " + std::to_string(status.port) : "OFFLINE") | color(kMuted),
-                }));
                 identity.push_back(keyValue("id", status.self.id.shortHex()));
             }
             else
             {
-                identity.push_back(keyValue("name", truncate(status.self.username, 24)));
                 identity.push_back(keyValue("id", status.self.id.shortHex()));
-                identity.push_back(keyValue("port", status.online ? std::to_string(status.port) : "offline"));
             }
         }
         else
@@ -321,8 +306,15 @@ namespace
             separator() | color(kRule),
             renderPeersSection(status, width, compact),
             separator() | color(kRule),
-            renderCommandsSection(usages, compact),
-        }) | borderStyled(kRule) | bgcolor(kPanel) | size(WIDTH, EQUAL, width) | flex;
+            renderCommandsSection(usages),
+            separator() | color(kRule),
+            vbox({
+                panelLabel("KEYS"),
+                hbox({ text("Ctrl+P/N") | color(kWarm), filler(), text("scroll") | color(kMuted) }),
+                hbox({ text("PgUp/PgDn") | color(kWarm), filler(), text("page") | color(kMuted) }),
+                hbox({ text("Up/Down") | color(kWarm), filler(), text("history") | color(kMuted) }),
+            }),
+        }) | borderStyled(kRule) | bgcolor(kPanel) | size(WIDTH, EQUAL, width);
     }
 
     // ---- page ------------------------------------------------------------
@@ -347,22 +339,14 @@ namespace
 
     Element renderInputPanel(InputMode mode, const ConsoleStatus& status, Element input_field)
     {
-        const std::string label = mode == InputMode::Command
-            ? (status.selected_peer ? "MESSAGE / ENCRYPTED SESSION" : "COMMAND / CONTROL")
-            : "FIRST-RUN SETUP";
-        return vbox({
-            panelLabel(label, "ENTER TO SEND"),
-            renderPrompt(mode, status, std::move(input_field)),
-        }) | borderStyled(kRule) | bgcolor(kPanel);
-    }
+        Element prompt = renderPrompt(mode, status, std::move(input_field));
+        if (mode == InputMode::Command)
+            return vbox({ std::move(prompt) }) | borderStyled(kRule) | bgcolor(kPanel);
 
-    Element renderFooter()
-    {
-        return hbox({
-            text("NULLNET / P2P") | color(kMuted),
-            filler(),
-            text("UP/DOWN HISTORY   CTRL+P/N SCROLL   /HELP COMMANDS") | color(kMuted),
-        });
+        return vbox({
+            panelLabel("FIRST-RUN SETUP"),
+            std::move(prompt),
+        }) | borderStyled(kRule) | bgcolor(kPanel);
     }
 
     Element renderPage(const ConsoleSnapshot& snapshot,
@@ -383,7 +367,7 @@ namespace
                 std::move(conversation) | flex,
                 text("  "),
                 renderSidebar(snapshot.status, usages, sidebar_width, terminal_height),
-            }) | flex;
+            }) | size(WIDTH, EQUAL, terminal_width) | flex;
         }
         else
         {
@@ -393,21 +377,13 @@ namespace
         }
 
         return vbox({
-            text(""),
             renderTitle(snapshot.status),
             separator() | color(kRule),
-            hbox({
-                text("PRIVATE / PEER-TO-PEER CHAT") | bold | color(kCoral),
-                filler(),
-                text(snapshot.status.selected_peer
-                    ? "SESSION / " + snapshot.status.selected_peer->shortHex()
-                    : "NETWORK / 01") | color(kMuted),
-            }),
             std::move(workspace) | flex,
             renderInputPanel(mode, snapshot.status, std::move(input_field)),
-            renderFooter(),
-            text(""),
-        }) | bgcolor(kCanvas) | color(kInk) | flex;
+        }) | bgcolor(kCanvas) | color(kInk) |
+            size(WIDTH, EQUAL, terminal_width) |
+            size(HEIGHT, EQUAL, terminal_height) | flex;
     }
 
     // ---- input component -------------------------------------------------
@@ -510,6 +486,7 @@ void ConsoleInterface::setOnline(uint16_t port, const PeerInfo& self)
         s.port = port;
         s.self = self;
         s.peers.clear();
+        s.peer_paths.clear();
         s.selected_peer.reset();
     });
 }
@@ -521,13 +498,17 @@ void ConsoleInterface::setOffline()
         s.online = false;
         s.port = 0;
         s.peers.clear();
+        s.peer_paths.clear();
         s.selected_peer.reset();
     });
 }
 
-void ConsoleInterface::onPeerConnected(const PeerInfo& peer)
+void ConsoleInterface::onPeerConnected(const PeerInfo& peer, ConnectionPath path)
 {
-    updateStatus([&](ConsoleStatus& s) { s.peers[peer.id] = peer.username; });
+    updateStatus([&](ConsoleStatus& s) {
+        s.peers[peer.id] = peer.username;
+        s.peer_paths[peer.id] = path;
+    });
 }
 
 void ConsoleInterface::onPeerDisconnected(const PeerId& peer_id)
@@ -535,6 +516,7 @@ void ConsoleInterface::onPeerDisconnected(const PeerId& peer_id)
     updateStatus([&](ConsoleStatus& s)
     {
         s.peers.erase(peer_id);
+        s.peer_paths.erase(peer_id);
         if (s.selected_peer == peer_id)
             s.selected_peer.reset();
     });
@@ -833,9 +815,9 @@ ConsoleInterface::PeerLookup ConsoleInterface::resolvePeer(const std::string& to
 ConsoleSnapshot ConsoleInterface::snapshot(std::size_t terminal_height)
 {
     std::lock_guard<std::mutex> lock(state_mutex);
-    // Reserve space for the branded header, conversation panel chrome,
-    // message input panel, footer, and outer breathing room.
-    visible_log_count = terminal_height > 15 ? terminal_height - 15 : 1;
+    // Reserve space for the single-line header, conversation panel chrome,
+    // and message input panel. The remaining screen belongs to chat.
+    visible_log_count = terminal_height > 10 ? terminal_height - 10 : 1;
     const std::size_t max_start = output.size() > visible_log_count
         ? output.size() - visible_log_count
         : 0;
@@ -884,11 +866,11 @@ void ConsoleInterface::run()
         if (event == Event::ArrowDown && navigateCommandHistory(1))
             return true;
         if (event == Event::PageUp) {
-            scrollLog(-std::max(1, screen.dimy() - 15));
+            scrollLog(-std::max(1, screen.dimy() - 10));
             return true;
         }
         if (event == Event::PageDown) {
-            scrollLog(std::max(1, screen.dimy() - 15));
+            scrollLog(std::max(1, screen.dimy() - 10));
             return true;
         }
         return false;

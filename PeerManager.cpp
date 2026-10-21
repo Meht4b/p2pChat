@@ -179,7 +179,8 @@ void PeerManager::receive()
                     },
                     [this](const std::string& cid, std::shared_ptr<Session> owner) {
                         registerCid(cid, std::move(owner));
-                    });
+                    }, std::nullopt, isLanAddress(source.address())
+                        ? ConnectionPath::Lan : ConnectionPath::Direct);
                 pending_sessions.emplace(session.get(), session);
                 callbacks.onPeerConnection(true, {});
                 session->startServer(initial_header, packet, received.size());
@@ -250,8 +251,9 @@ void PeerManager::onPeerIdentified(const PeerInfo& peer, std::shared_ptr<Session
     }
     auto it = active_sessions.find(id);
     if (it == active_sessions.end()) {
+        const ConnectionPath path = session->connectionPath();
         active_sessions.emplace(id, std::move(session));
-        callbacks.onPeerIdentified(peer);
+        callbacks.onPeerIdentified(peer, path);
         return;
     }
 
@@ -270,6 +272,8 @@ void PeerManager::onPeerIdentified(const PeerInfo& peer, std::shared_ptr<Session
         session->close();
         removeRoomTransport(session.get());
     }
+    if (keepNew)
+        callbacks.onPeerConnectionPathChanged(id, it->second->connectionPath());
     callbacks.onDuplicatePeerConnection(id, keepNew);
 }
 
@@ -296,7 +300,8 @@ void PeerManager::connect(const std::string& address, unsigned short port)
             },
             [this](const std::string& cid, std::shared_ptr<Session> owner) {
                 registerCid(cid, std::move(owner));
-            });
+            }, std::nullopt, isLanAddress(ip)
+                ? ConnectionPath::Lan : ConnectionPath::Direct);
         pending_sessions.emplace(session.get(), session);
         session->initiateHandshake();
         session->start();
@@ -317,9 +322,9 @@ void PeerManager::connectRoom(const std::string& room_token, const std::string& 
         auto [host, port] = parseRelayEndpoint(relay_server);
         auto room = std::make_shared<RoomConnection>(*io, std::move(host), port, room_token,
             [this](std::shared_ptr<RoomConnection> connection, UdpEndpoint local_path,
-                UdpEndpoint remote_path, bool quic_client) {
+                UdpEndpoint remote_path, bool quic_client, ConnectionPath path) {
                 onRoomReady(std::move(connection), std::move(local_path),
-                    std::move(remote_path), quic_client);
+                    std::move(remote_path), quic_client, path);
             },
             [this](std::shared_ptr<RoomConnection> connection, std::vector<std::uint8_t> packet) {
                 onRoomDatagram(std::move(connection), std::move(packet));
@@ -335,7 +340,8 @@ void PeerManager::connectRoom(const std::string& room_token, const std::string& 
 }
 
 void PeerManager::onRoomReady(std::shared_ptr<RoomConnection> room,
-    UdpEndpoint local_path, UdpEndpoint remote_path, bool quic_client)
+    UdpEndpoint local_path, UdpEndpoint remote_path, bool quic_client,
+    ConnectionPath path)
 {
     std::lock_guard<std::recursive_mutex> lock(state_mutex);
     const auto found = room_transports.find(room.get());
@@ -345,6 +351,7 @@ void PeerManager::onRoomReady(std::shared_ptr<RoomConnection> room,
     state.local_endpoint = std::move(local_path);
     state.remote_endpoint = std::move(remote_path);
     state.quic_client = quic_client;
+    state.path = path;
     state.path_ready = true;
     if (!quic_client) return;
 
@@ -356,7 +363,7 @@ void PeerManager::onRoomReady(std::shared_ptr<RoomConnection> room,
             },
             [this](const std::string& cid, std::shared_ptr<Session> owner) {
                 registerCid(cid, std::move(owner));
-            }, state.local_endpoint);
+            }, state.local_endpoint, state.path);
         state.session = session;
         session_rooms.emplace(session.get(), room.get());
         pending_sessions.emplace(session.get(), session);
@@ -392,7 +399,7 @@ void PeerManager::onRoomDatagram(std::shared_ptr<RoomConnection> room,
             },
             [this](const std::string& cid, std::shared_ptr<Session> owner) {
                 registerCid(cid, std::move(owner));
-            }, state.local_endpoint);
+            }, state.local_endpoint, state.path);
         state.session = session;
         session_rooms.emplace(session.get(), room.get());
         pending_sessions.emplace(session.get(), session);
