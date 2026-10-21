@@ -12,18 +12,25 @@
 using namespace ftxui;
 
 // ===========================================================================
-// View: pure functions that turn data into FTXUI elements.
-// Borderless "floating" layout, ASCII glyphs only.
+// View: a terminal-native take on the Nullnet website visual system: near-black
+// canvas, warm neutrals, coral highlights, fine panel rules, and small network
+// labels. All content remains ordinary FTXUI elements so it works in terminals.
 // ===========================================================================
 namespace
 {
-    const Color kAccent  = Color::Cyan;      // menu / prompt
-    const Color kSection = Color::Yellow;    // section titles
-    const Color kChat    = Color::Magenta;   // everything related to the active chat
+    const Color kCanvas  = Color::RGB(8, 8, 8);
+    const Color kPanel   = Color::RGB(16, 16, 15);
+    const Color kRule    = Color::RGB(53, 51, 48);
+    const Color kInk     = Color::RGB(240, 235, 226);
+    const Color kWarm    = Color::RGB(190, 182, 169);
+    const Color kMuted   = Color::RGB(133, 127, 117);
+    const Color kCoral   = Color::RGB(255, 111, 82);
+    const Color kOnline  = Color::RGB(132, 169, 146);
 
-    constexpr int    kSidebarWidth = 38;
-    constexpr size_t kTagWidth     = 11;     // widest chat tag is a 10 character name
-    constexpr size_t kKeyWidth     = 9;
+    constexpr int    kWideSidebarWidth = 34;
+    constexpr int    kCompactSidebarWidth = 28;
+    constexpr size_t kTagWidth = 12;
+    constexpr size_t kKeyWidth = 9;
     constexpr uint16_t kDefaultPort = 5000;
 
     std::string padRight(std::string s, size_t width)
@@ -84,22 +91,20 @@ namespace
         switch (entry.level)
         {
         case LogLevel::Success:
-            return { "ok", Color::Green, Color::GreenLight, false };
+            return { "OK", kOnline, kOnline, false };
         case LogLevel::Error:
-            return { "err", Color::Red, Color::RedLight, false };
+            return { "ERR", kCoral, kCoral, false };
         case LogLevel::Detail:
-            return { "", Color::Default, kAccent, false };
+            return { "", kMuted, kWarm, false };
         case LogLevel::Command:
-            return { ">", kAccent, Color::Default, true };
+            return { ">", kCoral, kInk, true };
         case LogLevel::Incoming:
-            // Keep peer text bright white; our own text uses a darker neutral
-            // gray so the two directions are easy to distinguish.
-            return { truncate(entry.sender, kTagWidth - 1), kChat, Color::White, false };
+            return { truncate(entry.sender, kTagWidth - 1), kCoral, kInk, false };
         case LogLevel::Outgoing:
-            return { "you", Color::BlueLight, Color::GrayDark, false };
+            return { "YOU", kMuted, kWarm, false };
         case LogLevel::Info:
         default:
-            return { "..", Color::GrayLight, Color::Default, false };
+            return { "INFO", kMuted, kWarm, false };
         }
     }
 
@@ -117,18 +122,12 @@ namespace
         });
     }
 
-    // "Activity" in the menu, a highlighted chat banner while chatting.
-    Element renderLogHeader(const ConsoleStatus& status)
+    Element panelLabel(const std::string& title, const std::string& detail = "")
     {
-        if (!status.selected_peer)
-            return text("Activity") | bold | color(kSection);
-
         return hbox({
-            text(" CHAT ") | bold | color(Color::Black) | bgcolor(kChat),
-            text("  " + peerLabel(status, *status.selected_peer)) | bold | color(kChat),
-            text("  " + status.selected_peer->shortHex()) | dim,
+            text(title) | bold | color(kCoral),
             filler(),
-            text("/leave to go back") | dim,
+            text(detail) | color(kMuted),
         });
     }
 
@@ -143,139 +142,187 @@ namespace
             rows.push_back(renderEntry(log[i]));
 
         if (rows.empty())
-            rows.push_back(text("nothing yet") | dim);
+            rows.push_back(text("Your words. Your path. Start with /connect.") | color(kMuted));
 
         const bool more_above = start > 0;
         const bool more_below = end < log.size();
         Element messages = vbox(std::move(rows)) | flex;
         const std::string scroll_state = more_above && more_below ? "^v"
             : more_above ? "^" : more_below ? "v" : "";
-        const std::string scroll_hint = status.selected_peer
-            ? "Ctrl+P/N scroll; PgUp/PgDn page; Up/Down history"
-            : "";
+        const std::string title = status.selected_peer
+            ? "SESSION / " + peerLabel(status, *status.selected_peer)
+            : "ACTIVITY / NODE";
+        const std::string detail = status.selected_peer
+            ? "PEER LINK"
+            : status.online ? "LISTENING" : "OFFLINE";
 
         return vbox({
-            renderLogHeader(status),
-            hbox({
-                filler(),
-                text(scroll_state + (scroll_state.empty() || scroll_hint.empty() ? "" : "  ") + scroll_hint) | dim,
-            }),
+            panelLabel(title, detail),
+            separator() | color(kRule),
             std::move(messages),
-        }) | flex;
+            hbox({
+                text(scroll_state.empty() ? " " : scroll_state + "  ") | color(kCoral),
+                text("Ctrl+P/N scroll   PgUp/PgDn page") | color(kMuted),
+                filler(),
+                text("Up/Down history") | color(kMuted),
+            }),
+        }) | borderStyled(kRule) | bgcolor(kPanel) | flex;
     }
 
-    // ---- title -----------------------------------------------------------
+    // ---- app chrome ------------------------------------------------------
 
     Element renderTitle(const ConsoleStatus& status)
     {
-        Elements row = {
-            text("nullnet") | bold | color(kAccent),
-        };
+        const std::string user = status.self.username.empty()
+            ? "UNCONFIGURED"
+            : truncate(status.self.username, 18);
+        const std::string network = status.online
+            ? "QUIC / UDP " + std::to_string(status.port)
+            : "NETWORK OFFLINE";
 
-        if (status.selected_peer)
-        {
-            row.push_back(text("  /  ") | dim);
-            row.push_back(text(peerLabel(status, *status.selected_peer)) | bold | color(kChat));
-        }
-
-        row.push_back(filler());
-        row.push_back(status.online
-            ? text("* online") | bold | color(Color::Green)
-            : text("* offline") | color(Color::GrayLight));
-
-        return hbox(std::move(row));
+        return hbox({
+            text(" o--o ") | color(kWarm),
+            text("nullnet") | bold | color(kInk),
+            text(".") | bold | color(kCoral),
+            text("   /   PRIVATE PEER CHAT") | color(kMuted),
+            filler(),
+            text(status.online ? "* " : "o ") | color(status.online ? kOnline : kMuted),
+            text(network) | color(status.online ? kInk : kMuted),
+            text("   ") | color(kRule),
+            text(user) | color(kWarm),
+        });
     }
 
-    // ---- sidebar ---------------------------------------------------------
-
-    Element section(const std::string& title, Elements items)
-    {
-        Elements rows;
-        rows.push_back(text(title) | bold | color(kSection));
-        for (auto& item : items)
-            rows.push_back(hbox({ text("  "), std::move(item) }));
-        return vbox(std::move(rows));
-    }
+    // ---- identity, peers, and command panels ----------------------------
 
     Element keyValue(const std::string& key, const std::string& value)
     {
         return hbox({
-            text(padRight(key, kKeyWidth)) | dim,
-            text(value) | bold,
+            text(padRight(key, kKeyWidth)) | color(kMuted),
+            text(value) | color(kInk),
         });
     }
 
-    Element renderStatusSection(const ConsoleStatus& status)
+    Element renderPeerRow(const std::string& name, const PeerId& peer_id, bool chatting,
+                          int width)
     {
-        Elements items;
-        if (!status.self.username.empty())
-        {
-            items.push_back(keyValue("name", truncate(status.self.username, 24)));
-            items.push_back(keyValue("id",   status.self.id.shortHex()));
-        }
-
-        if (status.online)
-        {
-            items.push_back(keyValue("port", std::to_string(status.port)));
-        }
-        else
-        {
-            items.push_back(text("not started") | dim);
-            items.push_back(text("run /start") | dim);
-        }
-
-        return section("Status", std::move(items));
+        const size_t id_width = width >= 32 ? 9 : 6;
+        const size_t name_width = width >= 32 ? 13 : 8;
+        return hbox({
+            text(chatting ? "> " : "  ") | color(chatting ? kCoral : kMuted),
+            text(truncate(name, name_width)) | bold | color(chatting ? kInk : kWarm),
+            filler(),
+            text(truncate(peer_id.shortHex(), id_width)) | color(kMuted),
+        });
     }
 
-    // The peer being chatted with is shown as a highlighted block.
-    Element renderPeerRow(const std::string& name, const PeerId& peer_id, bool chatting)
+    Element renderPeersSection(const ConsoleStatus& status, int width, bool compact)
     {
-        const std::string label = " " + truncate(name, 14) + " ";
-        if (!chatting)
+        Elements rows;
+        const size_t limit = compact ? 1 : status.peers.size();
+        size_t shown = 0;
+        const auto selected = status.selected_peer
+            ? status.peers.find(*status.selected_peer)
+            : status.peers.end();
+        if (compact && selected != status.peers.end())
         {
-            return hbox({
-                text(label),
-                text(peer_id.shortHex()) | dim,
+            rows.push_back(renderPeerRow(selected->second, selected->first, true, width));
+            shown = 1;
+        }
+        for (const auto& [peer_id, name] : status.peers)
+        {
+            if (compact && selected != status.peers.end() && peer_id == selected->first)
+                continue;
+            if (shown++ >= limit)
+                break;
+            rows.push_back(renderPeerRow(name, peer_id,
+                status.selected_peer == peer_id, width));
+        }
+
+        if (rows.empty())
+            rows.push_back(text("No active peers") | color(kMuted));
+        else if (compact && status.peers.size() > limit)
+            rows.push_back(text("+" + std::to_string(status.peers.size() - limit) + " more /showpeers") | color(kMuted));
+
+        return vbox({
+            panelLabel("PEERS", std::to_string(status.peers.size()) + " ONLINE"),
+            vbox(std::move(rows)),
+        });
+    }
+
+    Element renderCommandsSection(const std::vector<std::string>& usages, bool compact)
+    {
+        if (compact)
+        {
+            std::string command_names;
+            for (const auto& usage : usages)
+            {
+                const auto end = usage.find_first_of(" \t|");
+                const std::string command = usage.substr(0, end);
+                if (!command_names.empty())
+                    command_names += "   ";
+                command_names += command.empty() ? usage : command;
+            }
+            return vbox({
+                panelLabel("COMMANDS", "/help for syntax"),
+                paragraph(command_names) | color(kWarm),
             });
         }
 
-        return hbox({
-            text(label) | bold | color(Color::Black) | bgcolor(kChat),
-            text(" " + peer_id.shortHex()) | dim,
-            text(" chatting") | color(kChat),
+        Elements items;
+        for (const auto& usage : usages)
+        {
+            const auto end = usage.find_first_of(" \t|");
+            const std::string command = usage.substr(0, end);
+            items.push_back(hbox({
+                text("/ ") | color(kCoral),
+                text(command.empty() ? usage : command.substr(1)) | color(kWarm),
+            }));
+        }
+        return vbox({
+            panelLabel("COMMANDS", "/help for syntax"),
+            text(""),
+            vbox(std::move(items)),
         });
     }
 
-    Element renderPeersSection(const ConsoleStatus& status)
-    {
-        Elements rows;
-        for (const auto& [peer_id, name] : status.peers)
-            rows.push_back(renderPeerRow(name, peer_id, status.selected_peer == peer_id));
-
-        if (rows.empty())
-            rows.push_back(text("none yet") | dim);
-
-        return section("Peers (" + std::to_string(status.peers.size()) + ")", std::move(rows));
-    }
-
-    Element renderCommandsSection(const std::vector<std::string>& usages)
-    {
-        Elements items;
-        for (const auto& usage : usages)
-            items.push_back(text(usage) | color(kAccent));
-        return section("Commands", std::move(items));
-    }
-
     Element renderSidebar(const ConsoleStatus& status,
-                          const std::vector<std::string>& usages)
+                          const std::vector<std::string>& usages,
+                          int width,
+                          int terminal_height)
     {
+        const bool compact = terminal_height < 32;
+        Elements identity;
+        if (!status.self.username.empty())
+        {
+            if (compact)
+            {
+                identity.push_back(hbox({
+                    text(truncate(status.self.username, width >= 32 ? 13 : 9)) | bold | color(kInk),
+                    filler(),
+                    text(status.online ? "UDP " + std::to_string(status.port) : "OFFLINE") | color(kMuted),
+                }));
+                identity.push_back(keyValue("id", status.self.id.shortHex()));
+            }
+            else
+            {
+                identity.push_back(keyValue("name", truncate(status.self.username, 24)));
+                identity.push_back(keyValue("id", status.self.id.shortHex()));
+                identity.push_back(keyValue("port", status.online ? std::to_string(status.port) : "offline"));
+            }
+        }
+        else
+        {
+            identity.push_back(text(status.online ? "Listening" : "Run /start") | color(kMuted));
+        }
+
         return vbox({
-            renderStatusSection(status),
-            text(""),
-            renderPeersSection(status),
-            text(""),
-            renderCommandsSection(usages),
-        }) | size(WIDTH, EQUAL, kSidebarWidth);
+            vbox({ panelLabel("IDENTITY / 01"), vbox(std::move(identity)) }),
+            separator() | color(kRule),
+            renderPeersSection(status, width, compact),
+            separator() | color(kRule),
+            renderCommandsSection(usages, compact),
+        }) | borderStyled(kRule) | bgcolor(kPanel) | size(WIDTH, EQUAL, width) | flex;
     }
 
     // ---- page ------------------------------------------------------------
@@ -284,45 +331,83 @@ namespace
     {
         Element label;
         if (mode == InputMode::SetupUsername)
-            label = text("username > ") | bold | color(kAccent);
+            label = text("USERNAME  > ") | bold | color(kCoral);
         else if (mode == InputMode::SetupPort)
-            label = text("port > ") | bold | color(kAccent);
+            label = text("PORT  > ") | bold | color(kCoral);
         else if (status.selected_peer)
-            label = text(truncate(peerLabel(status, *status.selected_peer), 14) + " > ") | bold | color(kChat);
+            label = text("YOU  > ") | bold | color(kCoral);
         else
-            label = text("> ") | bold | color(kAccent);
+            label = text("COMMAND  > ") | bold | color(kCoral);
 
         return hbox({
             std::move(label),
             std::move(input_field) | flex,
+        }) | bgcolor(kPanel) | color(kInk);
+    }
+
+    Element renderInputPanel(InputMode mode, const ConsoleStatus& status, Element input_field)
+    {
+        const std::string label = mode == InputMode::Command
+            ? (status.selected_peer ? "MESSAGE / ENCRYPTED SESSION" : "COMMAND / CONTROL")
+            : "FIRST-RUN SETUP";
+        return vbox({
+            panelLabel(label, "ENTER TO SEND"),
+            renderPrompt(mode, status, std::move(input_field)),
+        }) | borderStyled(kRule) | bgcolor(kPanel);
+    }
+
+    Element renderFooter()
+    {
+        return hbox({
+            text("NULLNET / P2P") | color(kMuted),
+            filler(),
+            text("UP/DOWN HISTORY   CTRL+P/N SCROLL   /HELP COMMANDS") | color(kMuted),
         });
     }
 
     Element renderPage(const ConsoleSnapshot& snapshot,
                        const std::vector<std::string>& usages,
                        InputMode mode,
-                       Element input_field)
+                       Element input_field,
+                       int terminal_width,
+                       int terminal_height)
     {
-        Element body = hbox({
-            renderLog(snapshot.log, snapshot.status,
-                      snapshot.log_start, snapshot.visible_log_count),
-            text("    "),
-            renderSidebar(snapshot.status, usages),
-        }) | flex;
+        Element conversation = renderLog(snapshot.log, snapshot.status,
+            snapshot.log_start, snapshot.visible_log_count);
+        Element workspace;
+        if (terminal_width >= 74)
+        {
+            const int sidebar_width = terminal_width >= 106
+                ? kWideSidebarWidth : kCompactSidebarWidth;
+            workspace = hbox({
+                std::move(conversation) | flex,
+                text("  "),
+                renderSidebar(snapshot.status, usages, sidebar_width, terminal_height),
+            }) | flex;
+        }
+        else
+        {
+            // At narrow widths keep the conversation readable. Identity and
+            // peer details remain available through /known and /showpeers.
+            workspace = std::move(conversation) | flex;
+        }
 
-        return hbox({
-            text("   "),
-            vbox({
-                text(""),
-                renderTitle(snapshot.status),
-                text(""),
-                std::move(body),
-                text(""),
-                renderPrompt(mode, snapshot.status, std::move(input_field)),
-                text(""),
-            }) | flex,
-            text("   "),
-        });
+        return vbox({
+            text(""),
+            renderTitle(snapshot.status),
+            separator() | color(kRule),
+            hbox({
+                text("PRIVATE / PEER-TO-PEER CHAT") | bold | color(kCoral),
+                filler(),
+                text(snapshot.status.selected_peer
+                    ? "SESSION / " + snapshot.status.selected_peer->shortHex()
+                    : "NETWORK / 01") | color(kMuted),
+            }),
+            std::move(workspace) | flex,
+            renderInputPanel(mode, snapshot.status, std::move(input_field)),
+            renderFooter(),
+            text(""),
+        }) | bgcolor(kCanvas) | color(kInk) | flex;
     }
 
     // ---- input component -------------------------------------------------
@@ -748,9 +833,9 @@ ConsoleInterface::PeerLookup ConsoleInterface::resolvePeer(const std::string& to
 ConsoleSnapshot ConsoleInterface::snapshot(std::size_t terminal_height)
 {
     std::lock_guard<std::mutex> lock(state_mutex);
-    // The page reserves six terminal rows for the title, prompt, and spacing;
-    // the log header and its key hint use two more.
-    visible_log_count = terminal_height > 8 ? terminal_height - 8 : 1;
+    // Reserve space for the branded header, conversation panel chrome,
+    // message input panel, footer, and outer breathing room.
+    visible_log_count = terminal_height > 15 ? terminal_height - 15 : 1;
     const std::size_t max_start = output.size() > visible_log_count
         ? output.size() - visible_log_count
         : 0;
@@ -799,11 +884,11 @@ void ConsoleInterface::run()
         if (event == Event::ArrowDown && navigateCommandHistory(1))
             return true;
         if (event == Event::PageUp) {
-            scrollLog(-std::max(1, screen.dimy() - 8));
+            scrollLog(-std::max(1, screen.dimy() - 15));
             return true;
         }
         if (event == Event::PageDown) {
-            scrollLog(std::max(1, screen.dimy() - 8));
+            scrollLog(std::max(1, screen.dimy() - 15));
             return true;
         }
         return false;
@@ -812,7 +897,8 @@ void ConsoleInterface::run()
     auto page = Renderer(input_field, [&]
     {
         const auto current = snapshot(static_cast<std::size_t>(std::max(0, screen.dimy())));
-        return renderPage(current, commandUsages(), mode, input_field->Render());
+        return renderPage(current, commandUsages(), mode, input_field->Render(),
+            std::max(0, screen.dimx()), std::max(0, screen.dimy()));
     });
 
     setRedraw([&screen] { screen.PostEvent(Event::Custom); });
